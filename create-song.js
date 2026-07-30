@@ -47,6 +47,11 @@
               if (cb) return cb.checked;
               return true;
             })(),
+            useLyricsLimit: (() => {
+              const btn = oldPanel.querySelector("#suno-create-lyrics-limit-toggle");
+              if (btn) return btn.getAttribute("aria-pressed") !== "false";
+              return true;
+            })(),
           },
         })
       );
@@ -243,6 +248,7 @@
     delayAfterClearMs: 4000,
     stepDelayMs: 300,
     useMagicWand: true,
+    enforceLyricsLimit: true,
     pageReadyTimeoutMs: 20000,
     settleMs: 200,
     stepTimeoutMs: 15000,
@@ -364,11 +370,35 @@
     }
   }
 
+  function isLyricsLimitEnforced() {
+    const btn = document.getElementById("suno-create-lyrics-limit-toggle");
+    if (btn) return btn.getAttribute("aria-pressed") !== "false";
+    return CFG.enforceLyricsLimit !== false;
+  }
+
+  function setLyricsLimitEnforced(on) {
+    CFG.enforceLyricsLimit = !!on;
+    const btn = document.getElementById("suno-create-lyrics-limit-toggle");
+    if (btn) {
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.textContent = on
+        ? "📏 Lyrics limit ON (1400/1500)"
+        : "📏 Lyrics limit OFF (bypass all)";
+      btn.style.background = on ? "#0f4c3a" : "#292524";
+      btn.style.borderColor = on ? "#34d399" : "#57534e";
+      btn.style.color = on ? "#d1fae5" : "#a8a29e";
+      btn.title = on
+        ? "ON — warn over 1400, stop over 1500. Click to bypass length checks for all songs."
+        : "OFF — bypass lyrics length checks for every song. Click to enforce limits again.";
+    }
+  }
+
   function readTimingFromPanel() {
     CFG.stepDelayMs = Math.max(200, Number(document.getElementById("suno-create-step-delay")?.value || 0.3) * 1000);
     CFG.useMagicWand = isMagicWandEnabled();
+    CFG.enforceLyricsLimit = isLyricsLimitEnforced();
     CFG.delayAfterWandMs = Math.max(
-      1500,
+      0,
       Number(document.getElementById("suno-create-wand-delay")?.value || 2) * 1000
     );
     CFG.delayAfterCreateMs = Math.max(
@@ -1690,29 +1720,33 @@
 
     const lines = text.split("\n").filter((l) => l.trim()).length;
     log("pasted Lyrics —", got.length, "chars in field,", lines, "lines sent");
-    const limitStatus = lyricsLenStatus(text.length);
-    if (limitStatus === "block") {
-      log(
-        "ERROR: Lyrics",
-        text.length,
-        "chars — over hard limit",
-        CFG.sunoLyricsHardMax,
-        ". Stopping batch."
-      );
-      throw new Error(
-        `Lyrics ${text.length} chars — over ${CFG.sunoLyricsHardMax} limit. Shorten lyrics and retry.`
-      );
-    }
-    if (limitStatus === "warn") {
-      log(
-        "WARN: Lyrics",
-        text.length,
-        "chars — over",
-        CFG.sunoLyricsMax,
-        "but within",
-        CFG.sunoLyricsHardMax,
-        "— continuing anyway"
-      );
+    if (CFG.enforceLyricsLimit) {
+      const limitStatus = lyricsLenStatus(text.length);
+      if (limitStatus === "block") {
+        log(
+          "ERROR: Lyrics",
+          text.length,
+          "chars — over hard limit",
+          CFG.sunoLyricsHardMax,
+          ". Stopping batch."
+        );
+        throw new Error(
+          `Lyrics ${text.length} chars — over ${CFG.sunoLyricsHardMax} limit. Shorten lyrics and retry.`
+        );
+      }
+      if (limitStatus === "warn") {
+        log(
+          "WARN: Lyrics",
+          text.length,
+          "chars — over",
+          CFG.sunoLyricsMax,
+          "but within",
+          CFG.sunoLyricsHardMax,
+          "— continuing anyway"
+        );
+      }
+    } else if (text.length > CFG.sunoLyricsMax) {
+      log("Lyrics length bypass ON —", text.length, "chars, continuing without limit check");
     }
     if (got.length < Math.min(40, text.length * 0.15)) {
       throw new Error("Lyrics paste failed — field still empty");
@@ -2116,6 +2150,7 @@
         create: document.getElementById("suno-create-create-delay")?.value,
         clear: document.getElementById("suno-create-clear-delay")?.value,
         useWand: isMagicWandEnabled(),
+        useLyricsLimit: isLyricsLimitEnforced(),
       },
     });
   }
@@ -2163,6 +2198,7 @@
     if (t.create) panel.querySelector("#suno-create-create-delay").value = t.create;
     if (t.clear) panel.querySelector("#suno-create-clear-delay").value = t.clear;
     setMagicWandEnabled(t.useWand !== false);
+    setLyricsLimitEnforced(t.useLyricsLimit !== false);
   }
 
   function bindPanelSectionPersistence(panel) {
@@ -2180,9 +2216,14 @@
     });
     panel.querySelectorAll("#suno-create-step-delay, #suno-create-wand-delay, #suno-create-create-delay, #suno-create-clear-delay").forEach((el) => {
       el.addEventListener("change", () => capturePanelUi());
+      el.addEventListener("input", () => capturePanelUi());
     });
     panel.querySelector("#suno-create-wand-toggle")?.addEventListener("click", () => {
       setMagicWandEnabled(!isMagicWandEnabled());
+      capturePanelUi();
+    });
+    panel.querySelector("#suno-create-lyrics-limit-toggle")?.addEventListener("click", () => {
+      setLyricsLimitEnforced(!isLyricsLimitEnforced());
       capturePanelUi();
     });
   }
@@ -2320,6 +2361,16 @@
       <details data-suno-section="run" open style="margin-bottom:5px;padding:5px;border:1px solid #f59e0b;border-radius:8px;background:#1a1208">
         <summary style="cursor:pointer;color:#fcd34d;font-size:10px;font-weight:600">③ Run</summary>
         <button type="button" id="suno-create-wand-toggle" aria-pressed="true" title="ON — clicks ✨ wand after style for every song" style="${btn("#4c1d95", "#a78bfa", "#ede9fe")};width:100%;margin-top:5px;font-weight:700">✨ Magic wand ON (all songs)</button>
+        <button type="button" id="suno-create-lyrics-limit-toggle" aria-pressed="true" title="ON — warn over 1400, stop over 1500" style="${btn("#0f4c3a", "#34d399", "#d1fae5")};width:100%;margin-top:4px;font-weight:700">📏 Lyrics limit ON (1400/1500)</button>
+        <div style="margin-top:6px;padding:6px;border:1px solid #6d28d9;border-radius:6px;background:#110820">
+          <div style="font-size:9px;color:#a78bfa;font-weight:600;margin-bottom:4px">Wait times (seconds)</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px;color:#c4b5fd">
+            <label title="Pause between small steps">Step<input id="suno-create-step-delay" type="number" min="0.2" max="5" step="0.1" value="0.3" style="padding:4px;border-radius:5px;border:1px solid #6d28d9;background:#0a0614;color:#eee;width:100%"></label>
+            <label title="Wait after magic wand click">Wand<input id="suno-create-wand-delay" type="number" min="0" max="10" step="0.5" value="2" style="padding:4px;border-radius:5px;border:1px solid #6d28d9;background:#0a0614;color:#eee;width:100%"></label>
+            <label title="Wait after Create click">Create<input id="suno-create-create-delay" type="number" min="0.5" max="15" step="0.5" value="1" style="padding:4px;border-radius:5px;border:1px solid #6d28d9;background:#0a0614;color:#eee;width:100%"></label>
+            <label title="Wait after form reset">Clear<input id="suno-create-clear-delay" type="number" min="1" max="15" step="0.5" value="4" style="padding:4px;border-radius:5px;border:1px solid #6d28d9;background:#0a0614;color:#eee;width:100%"></label>
+          </div>
+        </div>
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px">
           <button type="button" id="suno-create-test" style="${btn("#15803d", "#22c55e", "#fff")};font-weight:600">Test 1</button>
           <button type="button" id="suno-create-start" style="${btn("#1d4ed8", "#3b82f6", "#fff")};font-weight:700">Start</button>
@@ -2328,16 +2379,6 @@
           <button type="button" id="suno-create-skip" style="${btn("#78350f", "#f59e0b", "#fef3c7")}">Skip song</button>
           <button type="button" id="suno-create-reset" style="${btn("#292524", "#57534e", "#e7e5e4")}">Reset form</button>
           <button type="button" id="suno-create-close" style="${btn("#292524", "#57534e", "#e7e5e4")}">Close</button>
-        </div>
-      </details>
-
-      <details data-suno-section="timings" style="margin-bottom:5px">
-        <summary style="cursor:pointer;color:#a78bfa;font-size:10px">Timings (sec)</summary>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:5px;font-size:10px;color:#c4b5fd">
-          <label>Step<input id="suno-create-step-delay" type="number" min="0.2" max="5" step="0.1" value="0.3" style="padding:4px;border-radius:5px;border:1px solid #6d28d9;background:#110820;color:#eee;width:100%"></label>
-          <label>Wand<input id="suno-create-wand-delay" type="number" min="1.5" max="10" step="0.5" value="2" style="padding:4px;border-radius:5px;border:1px solid #6d28d9;background:#110820;color:#eee;width:100%"></label>
-          <label>Create<input id="suno-create-create-delay" type="number" min="0.5" max="15" step="0.5" value="1" style="padding:4px;border-radius:5px;border:1px solid #6d28d9;background:#110820;color:#eee;width:100%"></label>
-          <label>Clear<input id="suno-create-clear-delay" type="number" min="1" max="15" step="0.5" value="4" style="padding:4px;border-radius:5px;border:1px solid #6d28d9;background:#110820;color:#eee;width:100%"></label>
         </div>
       </details>
 

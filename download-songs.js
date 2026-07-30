@@ -1,19 +1,29 @@
 // ============================================================
-// 1) Install chrome-extension folder once (see SETUP.md)
-// 2) Paste this in F12 Console on your workspace → Download ALL
-// Scrolls to load more songs · skips duplicates · remembers state
+// Paste in F12 Console on your OPEN PLAYLIST / song list page
+// ▶ Download This Playlist — scrolls list, downloads every song, stops when done
+// Shows green click ring + cursor on each automated click
 // ============================================================
 
 (function sunoDownloadMain() {
+  const LOADER_VERSION = 7;
+
   if (!/suno\.com/i.test(location.href)) {
     alert("Open your Suno workspace page first.");
     return;
   }
 
+  try {
+    const ver = Number(sessionStorage.getItem("suno-bm-loader-ver") || 0);
+    if (ver < LOADER_VERSION) {
+      sessionStorage.removeItem("suno-bm-loader");
+      sessionStorage.removeItem("suno-bm-autorun");
+      sessionStorage.setItem("suno-bm-loader-ver", String(LOADER_VERSION));
+    }
+  } catch (_) {}
+
   const bootTs = Number(sessionStorage.getItem("suno-bm-last-boot") || 0);
   if (Date.now() - bootTs < 2500 && document.getElementById("suno-bm-panel")) return;
   sessionStorage.setItem("suno-bm-last-boot", String(Date.now()));
-  sessionStorage.setItem("suno-bm-loader", "(" + sunoDownloadMain.toString() + ")();");
 
   document.getElementById("suno-bm-panel")?.remove();
 
@@ -24,6 +34,7 @@
     cardReadyTimeout: 12000,
     menuOpenTimeout: 12000,
     wavSubmenuTimeout: 12000,
+    hoverStepMs: 150,
     wavModalTimeout: 20000,
     modalCloseTimeout: 15000,
     scrollSettleTimeout: 2500,
@@ -47,7 +58,78 @@
     listMetaKey: "suno-bm-list-meta",
     playlistsDoneKey: "suno-bm-playlists-done",
     maxLogEntries: 800,
+    panelUiKey: "suno-bm-panel-ui",
+    playlistsStoreKey: "suno-bm-playlists-v1",
+    activePlaylistKey: "suno-bm-active-pl",
   };
+
+  function getDelayPanelUi() {
+    try {
+      return JSON.parse(sessionStorage.getItem(CFG.panelUiKey) || "{}");
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveDelayPanelUi(patch) {
+    try {
+      sessionStorage.setItem(CFG.panelUiKey, JSON.stringify({ ...getDelayPanelUi(), ...patch }));
+    } catch (_) {}
+  }
+
+  function applyDelaysFromPanel() {
+    const num = (id, fallback) => Number(document.getElementById(id)?.value ?? fallback);
+    CFG.menuOpenTimeout = Math.max(3000, num("suno-bm-delay-menu", 12) * 1000);
+    CFG.wavSubmenuTimeout = Math.max(3000, num("suno-bm-delay-wav", 12) * 1000);
+    CFG.hoverStepMs = Math.max(50, num("suno-bm-delay-hover-step", 0.15) * 1000);
+    CFG.wavModalTimeout = Math.max(5000, num("suno-bm-delay-modal", 20) * 1000);
+    CFG.minSettleMs = Math.max(100, num("suno-bm-delay-settle", 0.25) * 1000);
+    CFG.maxSettleMs = Math.max(CFG.minSettleMs + 100, num("suno-bm-delay-settle-max", 0.7) * 1000);
+  }
+
+  function restoreDelayPanelUi() {
+    const ui = getDelayPanelUi();
+    const set = (id, key) => {
+      const el = document.getElementById(id);
+      if (el && ui[key] != null) el.value = ui[key];
+    };
+    set("suno-bm-delay-menu", "menu");
+    set("suno-bm-delay-wav", "wav");
+    set("suno-bm-delay-hover-step", "hoverStep");
+    set("suno-bm-delay-modal", "modal");
+    set("suno-bm-delay-settle", "settle");
+    set("suno-bm-delay-settle-max", "settleMax");
+    const delays = document.getElementById("suno-bm-delays");
+    const wavSection = document.getElementById("suno-bm-delay-wav-section");
+    if (delays && ui.delaysOpen != null) delays.open = !!ui.delaysOpen;
+    if (wavSection && ui.wavOpen != null) wavSection.open = !!ui.wavOpen;
+    applyDelaysFromPanel();
+  }
+
+  function bindDelayPanelUi() {
+    const fields = [
+      ["suno-bm-delay-menu", "menu"],
+      ["suno-bm-delay-wav", "wav"],
+      ["suno-bm-delay-hover-step", "hoverStep"],
+      ["suno-bm-delay-modal", "modal"],
+      ["suno-bm-delay-settle", "settle"],
+      ["suno-bm-delay-settle-max", "settleMax"],
+    ];
+    fields.forEach(([id, key]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        saveDelayPanelUi({ [key]: el.value });
+        applyDelaysFromPanel();
+      });
+    });
+    document.getElementById("suno-bm-delays")?.addEventListener("toggle", (e) => {
+      saveDelayPanelUi({ delaysOpen: e.target.open });
+    });
+    document.getElementById("suno-bm-delay-wav-section")?.addEventListener("toggle", (e) => {
+      saveDelayPanelUi({ wavOpen: e.target.open });
+    });
+  }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const settle = (ms = CFG.minSettleMs) => sleep(ms + Math.floor(Math.random() * 120));
@@ -142,6 +224,41 @@
     return pos;
   }
 
+  let fakeCursorEl = null;
+
+  function ensureClickStyles() {
+    if (document.getElementById("suno-bm-click-styles")) return;
+    const s = document.createElement("style");
+    s.id = "suno-bm-click-styles";
+    s.textContent = `@keyframes suno-bm-click-ring{0%{transform:translate(-50%,-50%) scale(.35);opacity:1}100%{transform:translate(-50%,-50%) scale(1.7);opacity:0}}`;
+    document.body.appendChild(s);
+  }
+
+  function ensureFakeCursor() {
+    ensureClickStyles();
+    if (fakeCursorEl) return fakeCursorEl;
+    fakeCursorEl = document.createElement("div");
+    fakeCursorEl.id = "suno-bm-fake-cursor";
+    fakeCursorEl.style.cssText =
+      "position:fixed;z-index:2147483646;width:12px;height:12px;border:2px solid #fff;border-radius:50%;background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.45);pointer-events:none;transform:translate(-50%,-50%);transition:left .1s ease,top .1s ease;opacity:0";
+    document.body.appendChild(fakeCursorEl);
+    return fakeCursorEl;
+  }
+
+  function showClickFeedback(cx, cy, label) {
+    const x = Math.round(cx);
+    const y = Math.round(cy);
+    const cursor = ensureFakeCursor();
+    cursor.style.left = `${x}px`;
+    cursor.style.top = `${y}px`;
+    cursor.style.opacity = "1";
+    const ring = document.createElement("div");
+    ring.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:34px;height:34px;border:3px solid #22c55e;border-radius:50%;pointer-events:none;z-index:2147483647;animation:suno-bm-click-ring .55s ease-out forwards;box-shadow:0 0 14px rgba(34,197,94,.6)`;
+    document.body.appendChild(ring);
+    setTimeout(() => ring.remove(), 650);
+    if (label) log("click", label, "at", x, y);
+  }
+
   let stopBtn;
   let ui = {};
   let panelMeta = { currentSong: "—", currentStep: "Idle" };
@@ -232,18 +349,28 @@
   }
 
   function getListSongCount() {
-    const scopes = [
-      ...document.querySelectorAll("main, [role='main'], header, nav"),
-      document.body,
-    ];
-    for (const scope of scopes) {
-      const text = (scope.textContent || "").slice(0, 4000);
-      const matches = [...text.matchAll(/(\d[\d,]*)\s*Songs?\b/gi)];
-      if (!matches.length) continue;
-      const nums = matches.map((m) => parseInt(m[1].replace(/,/g, ""), 10)).filter((n) => n > 0);
-      if (nums.length) return Math.max(...nums);
+    const label = getListLabel();
+    let best = null;
+    let bestScore = Infinity;
+
+    for (const el of document.querySelectorAll("h1,h2,h3,h4,span,div,p,a,button")) {
+      const r = el.getBoundingClientRect();
+      if (r.top > 420 || r.width < 16 || r.height < 8) continue;
+      const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (t.length > 120 || t.length < 3) continue;
+      const m = t.match(/(\d[\d,]*)\s*Songs?\b/i);
+      if (!m) continue;
+      const n = parseInt(m[1].replace(/,/g, ""), 10);
+      if (!n || n <= 0) continue;
+      let score = r.top * 2 + r.left * 0.05 + t.length;
+      if (label && new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(t)) score -= 800;
+      if (label && t.toLowerCase().includes(label.toLowerCase().slice(0, 12))) score -= 400;
+      if (score < bestScore) {
+        bestScore = score;
+        best = n;
+      }
     }
-    return null;
+    return best;
   }
 
   function getListMeta() {
@@ -254,23 +381,175 @@
     };
   }
 
+  function getPlaylistKey() {
+    const url = new URL(location.href);
+    const raw = [
+      url.pathname,
+      url.searchParams.get("wid") || "",
+      url.searchParams.get("page") || "",
+      url.searchParams.get("pl") || "",
+      url.searchParams.get("playlist") || "",
+    ].join("|");
+    let h = 0;
+    for (let i = 0; i < raw.length; i++) h = ((h << 5) - h + raw.charCodeAt(i)) | 0;
+    return `pl_${(h >>> 0).toString(36)}`;
+  }
+
+  function getPlaylistUrlSignature() {
+    const url = new URL(location.href);
+    return [url.pathname, url.searchParams.get("wid") || "", url.searchParams.get("page") || ""].join("|");
+  }
+
+  function getStorageKey() {
+    return lockedPlaylistKey || sessionStorage.getItem(CFG.activePlaylistKey) || getPlaylistKey();
+  }
+
+  function getPlaylistStore() {
+    try {
+      return JSON.parse(localStorage.getItem(CFG.playlistsStoreKey) || "{}");
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function savePlaylistStore(store) {
+    try {
+      localStorage.setItem(CFG.playlistsStoreKey, JSON.stringify(store));
+    } catch (err) {
+      logError("localStorage save failed", err.message);
+    }
+  }
+
+  function defaultPlaylistRecord(meta) {
+    return {
+      meta: meta || getListMeta(),
+      done: [],
+      seen: [],
+      failed: {},
+      stats: { downloaded: 0, skipped: 0, errors: 0, pagesDone: 0 },
+      scroll: 0,
+      complete: false,
+      completedAt: null,
+      updatedAt: Date.now(),
+    };
+  }
+
+  function getPlaylistRecord(key = getStorageKey()) {
+    const store = getPlaylistStore();
+    if (!store[key]) {
+      store[key] = defaultPlaylistRecord(getListMeta());
+      savePlaylistStore(store);
+    }
+    return store[key];
+  }
+
+  function updatePlaylistRecord(key, patch) {
+    const store = getPlaylistStore();
+    const prev = store[key] || defaultPlaylistRecord(getListMeta());
+    store[key] = {
+      ...prev,
+      ...patch,
+      meta: { ...prev.meta, ...(patch.meta || {}) },
+      updatedAt: Date.now(),
+    };
+    savePlaylistStore(store);
+    return store[key];
+  }
+
+  function resetPlaylistRecord(key = getStorageKey()) {
+    const store = getPlaylistStore();
+    delete store[key];
+    savePlaylistStore(store);
+  }
+
+  function isPlaylistMarkedDone(key = getStorageKey()) {
+    return !!getPlaylistRecord(key).complete;
+  }
+
+  function reconcilePlaylistRecords() {
+    const url = new URL(location.href);
+    const wid = url.searchParams.get("wid");
+    if (!wid) return;
+    const store = getPlaylistStore();
+    const currentKey = getPlaylistKey();
+    let merged = { ...getPlaylistRecord(currentKey) };
+    let changed = false;
+    for (const [key, rec] of Object.entries(store)) {
+      if (key === currentKey || rec.meta?.wid !== wid) continue;
+      merged.done = [...new Set([...(merged.done || []), ...(rec.done || [])])];
+      merged.seen = [...new Set([...(merged.seen || []), ...(rec.seen || [])])];
+      merged.failed = { ...(rec.failed || {}), ...(merged.failed || {}) };
+      merged.complete = !!(merged.complete || rec.complete);
+      if (rec.completedAt && !merged.completedAt) merged.completedAt = rec.completedAt;
+      delete store[key];
+      changed = true;
+    }
+    if (changed) {
+      store[currentKey] = merged;
+      savePlaylistStore(store);
+      log("merged old playlist memory for workspace", wid.slice(0, 8));
+    }
+  }
+
+  function migrateLegacySessionStorage() {
+    const key = getStorageKey();
+    const rec = getPlaylistRecord(key);
+    if (rec.done.length || rec.seen.length) return;
+
+    const done = sessionStorage.getItem(CFG.doneKey);
+    if (!done) return;
+
+    try {
+      updatePlaylistRecord(key, {
+        done: JSON.parse(done),
+        seen: JSON.parse(sessionStorage.getItem(CFG.seenKey) || "[]"),
+        failed: JSON.parse(sessionStorage.getItem(CFG.failedKey) || "{}"),
+        stats: JSON.parse(
+          sessionStorage.getItem(CFG.statsKey) || '{"downloaded":0,"skipped":0,"errors":0,"pagesDone":0}'
+        ),
+        scroll: Number(sessionStorage.getItem(CFG.scrollPosKey) || 0),
+        meta: JSON.parse(sessionStorage.getItem(CFG.listMetaKey) || "null") || getListMeta(),
+      });
+      log("migrated session data → playlist", key);
+    } catch (_) {}
+  }
+
+  function getScrollPos(key = getStorageKey()) {
+    return Number(getPlaylistRecord(key).scroll || 0);
+  }
+
+  function saveScrollPos(top, key = getStorageKey()) {
+    updatePlaylistRecord(key, { scroll: top });
+  }
+
   function getSavedListMeta() {
     const live = getListMeta();
     try {
-      const saved = JSON.parse(sessionStorage.getItem(CFG.listMetaKey) || "{}");
+      const saved = getPlaylistRecord(getStorageKey()).meta || {};
       const name = isBadListName(saved.name) ? live.name : saved.name || live.name;
-      return { ...live, ...saved, name };
+      let expectedCount = saved.expectedCount || live.expectedCount;
+      if (saved.expectedCount && live.expectedCount && live.expectedCount > saved.expectedCount * 2) {
+        expectedCount = saved.expectedCount;
+      }
+      return { ...live, ...saved, name, expectedCount };
     } catch (_) {
       return live;
     }
   }
 
   function saveListMeta() {
-    const meta = { ...getListMeta(), savedAt: Date.now() };
+    const live = getListMeta();
+    const prev = getPlaylistRecord(getStorageKey()).meta || {};
+    let expectedCount = live.expectedCount;
+    if (prev.expectedCount && expectedCount && expectedCount > prev.expectedCount * 2) {
+      expectedCount = prev.expectedCount;
+    }
+    const meta = { ...live, expectedCount, savedAt: Date.now() };
     if (isBadListName(meta.name)) {
       const crumb = getBreadcrumbListName();
       meta.name = crumb || (meta.wid ? `Workspace ${meta.wid.slice(0, 8)}…` : "Current song list");
     }
+    updatePlaylistRecord(getStorageKey(), { meta });
     sessionStorage.setItem(CFG.listMetaKey, JSON.stringify(meta));
     sessionStorage.setItem("suno-bm-list-label", meta.name);
     log("list meta", meta.name, meta.expectedCount ? `${meta.expectedCount} songs` : "count unknown");
@@ -282,11 +561,16 @@
   }
 
   function getCompletedPlaylists() {
-    try {
-      return JSON.parse(sessionStorage.getItem(CFG.playlistsDoneKey) || "[]");
-    } catch (_) {
-      return [];
-    }
+    return Object.values(getPlaylistStore())
+      .filter((rec) => rec.complete)
+      .map((rec) => ({
+        name: rec.meta?.name,
+        expectedCount: rec.meta?.expectedCount,
+        seenCount: rec.seen?.length || 0,
+        savedCount: rec.done?.length || 0,
+        completedAt: rec.completedAt,
+      }))
+      .filter((p) => p.name);
   }
 
   function markPlaylistComplete(meta, seenCount, savedCount) {
@@ -297,11 +581,84 @@
       savedCount,
       completedAt: new Date().toISOString(),
     };
-    const done = getCompletedPlaylists().filter((p) => p.name !== meta.name);
-    done.push(entry);
-    sessionStorage.setItem(CFG.playlistsDoneKey, JSON.stringify(done));
+    updatePlaylistRecord(getStorageKey(), {
+      complete: true,
+      completedAt: entry.completedAt,
+      meta,
+    });
     log("playlist complete", entry);
     return entry;
+  }
+
+  function playlistDoneMessage(name) {
+    return (
+      `✓ Playlist finished: "${name}"\n\n` +
+      `All songs in THIS playlist are saved — nothing will download twice.\n\n` +
+      `STOPPED. The script does not move on to another playlist.\n` +
+      `Move WAV files into this playlist's folder now.\n\n` +
+      `To download a different playlist: open it yourself in Suno, paste the script, click Download.\n\n` +
+      `To run this same playlist again: click Reset playlist first.`
+    );
+  }
+
+  let lockedPlaylistKey = null;
+  let lockedUrlSignature = null;
+
+  function lockPlaylistForRun() {
+    lockedPlaylistKey = getPlaylistKey();
+    lockedUrlSignature = getPlaylistUrlSignature();
+    sessionStorage.setItem(CFG.activePlaylistKey, lockedPlaylistKey);
+  }
+
+  function assertSamePlaylist() {
+    if (lockedUrlSignature && getPlaylistUrlSignature() !== lockedUrlSignature) {
+      window.__sunoBmStop = true;
+      clearAutorun();
+      setRunning(false);
+      lockedPlaylistKey = null;
+      lockedUrlSignature = null;
+      alert(
+        `Stopped — you left this playlist page.\n\n` +
+          `Open the same playlist again and click Resume.`
+      );
+      refreshPanel("Stopped — left playlist page");
+      return false;
+    }
+    return true;
+  }
+
+  function getTargetSongCount(meta, seenSet) {
+    if (!meta.expectedCount) return null;
+    if (seenSet.size >= 3 && meta.expectedCount > Math.max(seenSet.size * 4, 200)) {
+      return null;
+    }
+    return meta.expectedCount;
+  }
+
+  function canFinishPlaylist(meta, doneSet, seenSet) {
+    if (!isPlaylistFullyComplete(meta, doneSet, seenSet)) return false;
+    const target = getTargetSongCount(meta, seenSet);
+    if (target && seenSet.size < target) return false;
+    return true;
+  }
+
+  function blockIfPlaylistDone() {
+    const key = getStorageKey();
+    const meta = getSavedListMeta();
+    const rec = getPlaylistRecord(key);
+    if (!rec.complete) return false;
+
+    const doneSet = new Set(rec.done || []);
+    const seenSet = new Set(rec.seen || []);
+    if (!canFinishPlaylist(meta, doneSet, seenSet)) {
+      updatePlaylistRecord(key, { complete: false, completedAt: null });
+      log("cleared stale DONE flag — playlist not actually complete");
+      return false;
+    }
+
+    alert(playlistDoneMessage(meta.name));
+    refreshPanel("DONE — move files to folder");
+    return true;
   }
 
   function countSavedInSeen(doneSet, seenSet) {
@@ -310,6 +667,27 @@
       if (doneSet.has(id)) n++;
     }
     return n;
+  }
+
+  function isPlaylistFullyComplete(meta, doneSet, seenSet) {
+    const left = countUnseenUndone(doneSet, seenSet);
+    if (left > 0) return false;
+    const saved = countSavedInSeen(doneSet, seenSet);
+    const target = getTargetSongCount(meta, seenSet);
+    if (target) {
+      return saved >= target && seenSet.size >= target;
+    }
+    return seenSet.size > 0 && saved === seenSet.size;
+  }
+
+  function playlistProgressLine(meta, doneSet, seenSet) {
+    const saved = countSavedInSeen(doneSet, seenSet);
+    const seen = seenSet.size;
+    const target = getTargetSongCount(meta, seenSet) || meta.expectedCount;
+    if (target) {
+      return `${saved}/${target} saved · ${seen} seen in list`;
+    }
+    return `${saved}/${seen} saved in this list`;
   }
 
   function estimateSecondsPerSong() {
@@ -350,7 +728,7 @@
 
   function defaultPlan() {
     return {
-      mode: "all",
+      mode: "playlist",
       startIndex: 0,
       endIndex: null,
       onlyCount: null,
@@ -370,22 +748,25 @@
   }
 
   function getDoneSet() {
-    return new Set(JSON.parse(sessionStorage.getItem(CFG.doneKey) || "[]"));
+    return new Set(getPlaylistRecord().done || []);
   }
 
   function saveDoneSet(set) {
-    sessionStorage.setItem(CFG.doneKey, JSON.stringify([...set]));
+    updatePlaylistRecord(getStorageKey(), { done: [...set] });
   }
 
   function getStats() {
-    return JSON.parse(
-      sessionStorage.getItem(CFG.statsKey) ||
-        '{"downloaded":0,"skipped":0,"errors":0,"pagesDone":0}'
-    );
+    return {
+      downloaded: 0,
+      skipped: 0,
+      errors: 0,
+      pagesDone: 0,
+      ...getPlaylistRecord().stats,
+    };
   }
 
   function saveStats(stats) {
-    sessionStorage.setItem(CFG.statsKey, JSON.stringify(stats));
+    updatePlaylistRecord(getStorageKey(), { stats });
   }
 
   function clearAutorun() {
@@ -395,6 +776,11 @@
 
   function setAutorun() {
     sessionStorage.setItem(CFG.autorunKey, "1");
+    sessionStorage.setItem(CFG.activePlaylistKey, getPlaylistKey());
+  }
+
+  function isAutorunForCurrentPlaylist() {
+    return isAutorun() && sessionStorage.getItem(CFG.activePlaylistKey) === getPlaylistKey();
   }
 
   function isAutorun() {
@@ -422,10 +808,10 @@
 
   function applySavedScrollPosition(container) {
     if (!container) return 0;
-    const saved = Number(sessionStorage.getItem(CFG.scrollPosKey) || 0);
+    const saved = getScrollPos();
     const top = clampScrollTop(container, saved);
     container.scrollTop = top;
-    sessionStorage.setItem(CFG.scrollPosKey, String(top));
+    saveScrollPos(top);
     return top;
   }
 
@@ -448,7 +834,8 @@
     const ext = sessionStorage.getItem("suno-bm-ext") === "1";
     const scrollMode = isScrollLibraryMode();
     const container = findScrollContainer();
-    const scrollSaved = Number(sessionStorage.getItem(CFG.scrollPosKey) || 0);
+    const scrollSaved = getScrollPos();
+    const playlistDone = isPlaylistMarkedDone();
     const running = isRunning();
     if (!running && container && scrollSaved > 0 && left > 0) {
       applySavedScrollPosition(container);
@@ -458,16 +845,15 @@
     const cov = seen > 0 ? Math.min(100, Math.round((doneTotal / seen) * 100)) : 0;
 
     if (ui.stateBadge) {
-      ui.stateBadge.textContent = running ? "RUNNING" : extra === "FINISHED" ? "DONE" : "READY";
-      ui.stateBadge.style.background = running ? "#163" : extra === "FINISHED" ? "#246" : "#333";
-      ui.stateBadge.style.color = running ? "#afa" : "#ccc";
+      ui.stateBadge.textContent = running ? "RUNNING" : playlistDone || extra === "FINISHED" ? "DONE" : "READY";
+      ui.stateBadge.style.background = running ? "#163" : playlistDone || extra === "FINISHED" ? "#14532d" : "#333";
+      ui.stateBadge.style.color = running ? "#afa" : playlistDone || extra === "FINISHED" ? "#bbf7d0" : "#ccc";
     }
 
     if (ui.pageLine) {
       const meta = getSavedListMeta();
       const countPart = meta.expectedCount ? ` · ${meta.expectedCount} songs in Suno` : "";
-      const doneLists = getCompletedPlaylists();
-      const doneMark = doneLists.some((p) => p.name === meta.name) ? " · ✓ done before" : "";
+      const doneMark = playlistDone ? " · ✓ DONE (won't re-download)" : "";
       ui.pageLine.textContent = scrollMode
         ? `List: ${meta.name}${countPart} · ${cards} visible · ${seen} tracked · scroll ${scrollPct}%${doneMark}`
         : `Page ${getPage()} · ${cards} visible · ${seen} seen`;
@@ -499,8 +885,8 @@
       ui.etaLine.textContent = left
         ? `Est. ${formatEta(left * sec)} left · ~${sec}s typical · waits for UI ready`
         : seen
-          ? `List complete for scrolled songs — verify .wav count in Downloads folder`
-          : `Click Download ALL · ~${sec}s typical per song (event-driven waits)`;
+          ? `Playlist progress — verify .wav files in Downloads folder`
+          : `Open a playlist · click Download This Playlist`;
     }
 
     if (ui.sessionLine) {
@@ -515,13 +901,27 @@
       const doneNote = doneLists.length ? ` · ${doneLists.length} playlist(s) marked complete` : "";
       ui.coverageLine.textContent = seen
         ? `SAVED = click finished (not file count) · ${cov}% of ${seen} seen${doneNote}`
-        : "Only downloads songs in the OPEN list — open each playlist separately";
+        : "One open playlist only — scrolls all songs, skips saved, stops when complete";
     }
 
     if (ui.modeLine) {
       ui.modeLine.textContent = running
         ? "Working: batch visible songs → smart skip saved blocks → 2nd pass if needed"
-        : "Download ALL = fresh start at top · Resume = continue where you stopped";
+        : playlistDone
+          ? "Finished — move WAVs to folder · script stopped (won't open another playlist)"
+          : "One playlist only · skips already saved · stops when every song is done";
+    }
+
+    const allBtn = document.getElementById("suno-bm-all");
+    const resumeBtn = document.getElementById("suno-bm-resume");
+    if (allBtn) {
+      allBtn.disabled = !!playlistDone && !running;
+      allBtn.style.opacity = playlistDone && !running ? "0.45" : "1";
+      allBtn.title = playlistDone ? "Playlist done — Reset (this playlist) to run again" : "";
+    }
+    if (resumeBtn) {
+      resumeBtn.disabled = !!playlistDone && !running;
+      resumeBtn.style.opacity = playlistDone && !running ? "0.45" : "1";
     }
 
     if (ui.statusLine) ui.statusLine.textContent = extra || (running ? "Running…" : "Ready");
@@ -666,11 +1066,11 @@
   }
 
   function getFailedMap() {
-    return JSON.parse(sessionStorage.getItem(CFG.failedKey) || "{}");
+    return { ...getPlaylistRecord().failed };
   }
 
   function saveFailedMap(map) {
-    sessionStorage.setItem(CFG.failedKey, JSON.stringify(map));
+    updatePlaylistRecord(getStorageKey(), { failed: map });
   }
 
   function bumpFailed(id) {
@@ -774,7 +1174,7 @@
     if (container.scrollTop === before) {
       container.scrollTop = container.scrollHeight;
     }
-    sessionStorage.setItem(CFG.scrollPosKey, String(container.scrollTop));
+    saveScrollPos(container.scrollTop);
     await waitForScrollIdle(container);
   }
 
@@ -833,11 +1233,11 @@
   }
 
   function getSeenSet() {
-    return new Set(JSON.parse(sessionStorage.getItem(CFG.seenKey) || "[]"));
+    return new Set(getPlaylistRecord().seen || []);
   }
 
   function saveSeenSet(set) {
-    sessionStorage.setItem(CFG.seenKey, JSON.stringify([...set]));
+    updatePlaylistRecord(getStorageKey(), { seen: [...set] });
   }
 
   function registerVisibleSongs(seen) {
@@ -870,7 +1270,7 @@
     if (container.scrollTop === before) {
       container.scrollTop = container.scrollHeight;
     }
-    sessionStorage.setItem(CFG.scrollPosKey, String(container.scrollTop));
+    saveScrollPos(container.scrollTop);
     await waitForScrollIdle(container);
   }
 
@@ -928,7 +1328,7 @@
       container.scrollTop += cr.bottom - sr.bottom + margin;
     }
 
-    sessionStorage.setItem(CFG.scrollPosKey, String(container.scrollTop));
+    saveScrollPos(container.scrollTop);
   }
 
   function scrollCardIntoView(card, block = "nearest") {
@@ -1029,44 +1429,40 @@
   async function isolatedButtonClick(btn, label) {
     if (!btn) return;
     pauseAllMedia();
-    const row = btn.closest('[role="rowgroup"] > *, [role="row"]');
-    const stopBubble = (e) => e.stopPropagation();
-    btn.addEventListener("click", stopBubble, false);
-    btn.addEventListener("mousedown", stopBubble, false);
-
     try {
       await withPanelPassthrough(async () => {
-        const { cx, cy } = pointerCoords(btn);
-        const hit = document.elementFromPoint(cx, cy);
-        log(label || "isolated click", "at", cx, cy, "hit", hit?.tagName, buttonLabel(hit));
-        if (hit && hit !== btn && !btn.contains(hit)) {
-          throw new Error(`${label || "button"} obscured by ${buttonLabel(hit)}`);
-        }
-        btn.click();
+        await clickTargetElement(btn, label || "button");
       });
     } finally {
-      btn.removeEventListener("click", stopBubble, false);
-      btn.removeEventListener("mousedown", stopBubble, false);
+      pauseAllMedia();
     }
-
-    pauseAllMedia();
-    await sleep(120);
-  }
-
-  async function menuPortalClick(el, label) {
-    const target = menuItemClickTarget(el);
-    pauseAllMedia();
-    await withPanelPassthrough(async () => {
-      log(label || "menu click", menuItemLabel(target));
-      target.click();
-    });
-    pauseAllMedia();
-    await sleep(120);
+    await sleep(220);
   }
 
   async function clickMoreOptions(btn) {
     await isolatedButtonClick(btn, "More options");
-    await settle(CFG.minSettleMs);
+    if (menuLooksOpen()) return;
+    btn.focus?.();
+    await withPanelPassthrough(async () => {
+      btn.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+      btn.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
+    });
+    await sleep(180);
+    if (menuLooksOpen()) return;
+    await withPanelPassthrough(async () => {
+      await clickTargetElement(btn, "More options retry");
+    });
+    await settle(CFG.minSettleMs + 150);
+  }
+  async function menuPortalClick(el, label) {
+    const target = menuItemClickTarget(el);
+    pauseAllMedia();
+    await withPanelPassthrough(async () => {
+      await clickTargetElement(target, label || "menu");
+      log(label || "menu click", menuItemLabel(target));
+    });
+    pauseAllMedia();
+    await sleep(120);
   }
 
   function visibleSongIds() {
@@ -1206,11 +1602,11 @@
   }
 
   function listVisibleMenus() {
-    return [...document.querySelectorAll('[role="menu"]')].filter((m) => {
-      if (m.closest("#suno-bm-panel")) return false;
-      const r = m.getBoundingClientRect();
-      return r.width > 8 && r.height > 8;
-    });
+    return getVisibleMenuRoots();
+  }
+
+  function menuLooksOpen() {
+    return !!findDownloadItem() || listVisibleMenus().length > 0;
   }
 
   function findDownloadItem() {
@@ -1399,6 +1795,7 @@
 
     await withPanelPassthrough(async () => {
       pauseAllMedia();
+      showClickFeedback(cx, cy, label || "Download File");
       const hit = document.elementFromPoint(cx, cy);
       const hitBtn = hit?.closest("button,a,[role='button']");
       if (hitBtn && hitBtn !== btn && !btn.contains(hitBtn)) {
@@ -1418,6 +1815,7 @@
     const el = target.closest("button,a,[role='button']") || target;
     const pos = elementPos(el, label || "click");
     const { cx, cy } = pointerCoords(el);
+    showClickFeedback(cx, cy, label || "click");
     log("clickTarget", label, "at", pos?.cx, pos?.cy, "tag", el.tagName);
 
     const base = {
@@ -1577,7 +1975,7 @@
       await clickMoreOptions(more);
       log(`More menu attempt ${attempt}`);
       try {
-        const dl = await waitFor(findDownloadItem, "Download menu item", CFG.menuOpenTimeout);
+        const dl = await waitFor(() => findDownloadItem(), "Download menu item", CFG.menuOpenTimeout);
         logMenuState("Menu open");
         return dl;
       } catch (_) {
@@ -1612,7 +2010,7 @@
       if (round === 9) {
         await hoverAt(target, cx - 90, cy);
       }
-      await sleep(CFG.pollMs);
+      await sleep(CFG.hoverStepMs);
     }
 
     await waitFor(findWavItem, "WAV submenu", CFG.wavSubmenuTimeout);
@@ -1658,7 +2056,7 @@
 
     const title = card.querySelector("a[href*='/song/']")?.textContent?.trim() || id || "?";
 
-    statusMsg(`#${globalNum} (${seenCount} seen): More -> WAV -> Download File | ${title.slice(0, 28)}`);
+    statusMsg(`#${globalNum} · ${playlistProgressLine(getSavedListMeta(), getDoneSet(), getSeenSet())} · ${title.slice(0, 22)}`);
 
     startPlayerGuard();
     try {
@@ -1766,13 +2164,13 @@
       }
     } else {
       if (container) {
-        const saved = Number(sessionStorage.getItem(CFG.scrollPosKey) || 0);
+        const saved = getScrollPos();
         const resume = saved > 0 && countUnseenUndone(done, seen) > 0 && !plan.freshStart;
         if (resume) {
           applySavedScrollPosition(container);
         } else {
           container.scrollTop = 0;
-          sessionStorage.setItem(CFG.scrollPosKey, "0");
+          saveScrollPos(0);
         }
         await waitForScrollIdle(container);
         registerVisibleSongs(seen);
@@ -1837,11 +2235,30 @@
           );
 
           if (bottomStable >= stableNeeded) {
+            const meta = getSavedListMeta();
             const left = countUnseenUndone(done, seen);
             const failedLeft = Object.keys(getFailedMap()).filter((id) => seen.has(id) && !done.has(id)).length;
-            if (left === 0) {
-              log("absolute end — all seen songs done");
-              finishAll(`Playlist complete: "${getSavedListMeta().name}" — all ${seen.size} scrolled songs saved.`);
+
+            if (isPlaylistFullyComplete(meta, done, seen)) {
+              log("playlist complete — all songs saved", playlistProgressLine(meta, done, seen));
+              finishAll(
+                `Playlist complete: "${meta.name}" — ${playlistProgressLine(meta, done, seen)}.`
+              );
+              return { ok: true, downloaded, skipped, errors, hasMore: false, finished: true };
+            }
+
+            const target = getTargetSongCount(meta, seen);
+            if (target && seen.size < target) {
+              log("list still loading — seen", seen.size, "of", target);
+              bottomStable = 0;
+              await scrollToLoadMore();
+              registerVisibleSongs(seen);
+              continue;
+            }
+
+            if (left === 0 && (!target || seen.size >= target)) {
+              log("absolute end — all songs in list saved");
+              finishAll(`Playlist complete: "${getSavedListMeta().name}" — ${playlistProgressLine(meta, done, seen)}.`);
               return { ok: true, downloaded, skipped, errors, hasMore: false, finished: true };
             }
             if (failedLeft === left) {
@@ -1851,7 +2268,7 @@
             log(`${left} left — second pass from top`);
             bottomStable = 0;
             container.scrollTop = 0;
-            sessionStorage.setItem(CFG.scrollPosKey, "0");
+            saveScrollPos(0);
             await sleep(1000);
           }
         } else {
@@ -1865,10 +2282,20 @@
     saveStats(stats);
 
     registerVisibleSongs(seen);
+    const meta = getSavedListMeta();
     const left = countUnseenUndone(done, seen);
-    statusMsg(`Pass done +${downloaded} new · seen ${seen.size} · ${left} left · ${errors} err`);
-    if (left === 0 && !window.__sunoBmStop) {
-      finishAll(`Playlist complete: "${getSavedListMeta().name}" — all ${seen.size} scrolled songs saved.`);
+    statusMsg(`Pass done +${downloaded} new · ${playlistProgressLine(meta, done, seen)} · ${errors} err`);
+    if (!window.__sunoBmStop && canFinishPlaylist(meta, done, seen)) {
+      finishAll(`Playlist complete: "${meta.name}" — ${playlistProgressLine(meta, done, seen)}.`);
+      return { ok: true, downloaded, skipped, errors, hasMore: false, finished: true };
+    }
+    const target = getTargetSongCount(meta, seen);
+    if (left === 0 && target && seen.size < target) {
+      log("pass done but list incomplete — seen", seen.size, "of", target);
+      return { ok: true, downloaded, skipped, errors, hasMore: true };
+    }
+    if (left === 0 && !target && seen.size > 0 && !window.__sunoBmStop) {
+      finishAll(`Playlist complete: "${meta.name}" — all ${seen.size} songs saved.`);
       return { ok: true, downloaded, skipped, errors, hasMore: false, finished: true };
     }
     return { ok: true, downloaded, skipped, errors, hasMore: left > 0 };
@@ -1886,7 +2313,7 @@
     const stats = getStats();
     const meta = getSavedListMeta();
     const listName = meta.name;
-    const complete = left === 0;
+    const complete = canFinishPlaylist(meta, doneSet, seenSet);
     let entry = null;
 
     if (complete) {
@@ -1906,31 +2333,26 @@
     alert(
       msg ||
         (complete
-          ? `Playlist complete: "${listName}"\n\n` +
-            expectedLine +
-            `Scrolled past: ${seen} songs\n` +
-            `Saved (clicks): ${savedInList}\n` +
-            `Still missing: ${left}\n` +
-            `Errors: ${stats.errors}\n\n` +
-            matchLine +
-            `Verify your Downloads folder — SAVED = click finished, not file count.`
+          ? `${playlistDoneMessage(listName)}\n\n${expectedLine}Saved (clicks): ${savedInList}\nSeen: ${seen}\nErrors: ${stats.errors}\n\n${matchLine}Verify WAV files landed in your Downloads folder.`
           : `Not finished — "${listName}"\n\n` +
             expectedLine +
             `Saved in this list: ${savedInList}\n` +
             `Seen: ${seen}\n` +
             `Still need: ${left}\n` +
             `Errors: ${stats.errors}\n\n` +
-            `Click Resume to continue, or open the next playlist and run Download ALL again.`)
+            `Click Resume to continue this playlist.`)
     );
     refreshPanel(complete ? `FINISHED — ${listName}` : `Stopped — ${left} left in "${listName}"`);
   }
 
   async function downloadAllLoop() {
+    lockPlaylistForRun();
     setAutorun();
     setRunning(true);
     window.__sunoBmStop = false;
 
     while (!window.__sunoBmStop) {
+      if (!assertSamePlaylist()) return;
       refreshPanel();
 
       if (!getSongCards().length) {
@@ -1959,11 +2381,11 @@
 
       if (plan.nextPlan) {
         setPlan({ ...defaultPlan(), ...plan.nextPlan });
-      } else if (plan.mode === "all") {
+      } else if (plan.mode === "playlist") {
         setPlan(defaultPlan());
       }
 
-      if (hasPagination()) {
+      if (plan.mode !== "playlist" && hasPagination()) {
         statusMsg(`Paginated UI — going to page ${getPage() + 1}…`);
         const next = getPage() + 1;
         const nav = await goToNextPage(next);
@@ -1978,19 +2400,30 @@
       }
 
       if (result.finished) {
+        lockedPlaylistKey = null;
+        lockedUrlSignature = null;
         setRunning(false);
         return;
       }
 
       if (result.hasMore) {
-        statusMsg(`${countUnseenUndone(getDoneSet(), getSeenSet())} seen songs left — restarting from top…`);
+        statusMsg(`${countUnseenUndone(getDoneSet(), getSeenSet())} left in this playlist — continuing…`);
         continue;
       }
 
-      finishAll("All songs downloaded.");
+      if (canFinishPlaylist(getSavedListMeta(), getDoneSet(), getSeenSet())) {
+        finishAll("This playlist is fully downloaded.");
+      } else {
+        statusMsg("Pass done — still songs left in this playlist");
+        continue;
+      }
+      lockedPlaylistKey = null;
+      lockedUrlSignature = null;
       return;
     }
 
+    lockedPlaylistKey = null;
+    lockedUrlSignature = null;
     setRunning(false);
   }
 
@@ -2002,6 +2435,7 @@
       return;
     }
     scrollCardIntoView(card, "center");
+    registerVisibleSongs(getSeenSet());
     setPlan({ mode: "test", onlyCount: 1, stopAfterPage: true, targetIds: null });
     statusMsg("TEST 1 song — watch the menus");
     const done = getDoneSet();
@@ -2058,108 +2492,111 @@
   }
 
   function startOnePass() {
+    if (blockIfPlaylistDone()) return;
     setPlan({ ...defaultPlan(), stopAfterPage: true, freshStart: true });
-    sessionStorage.removeItem(CFG.scrollPosKey);
+    saveScrollPos(0);
     downloadAllLoop();
   }
 
   const panel = document.createElement("div");
   panel.id = "suno-bm-panel";
   panel.style.cssText =
-    "position:fixed;top:12px;left:12px;z-index:5000;width:400px;max-height:92vh;overflow:hidden;display:flex;flex-direction:column;background:#0a0a0a;color:#eee;padding:0;border-radius:14px;font:13px/1.45 system-ui,sans-serif;box-shadow:0 12px 48px rgba(0,0,0,.6);border:1px solid #333;pointer-events:none";
+    "position:fixed;top:10px;left:10px;z-index:5000;width:292px;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;background:#071009;color:#eafff0;padding:0;border-radius:12px;font:11px/1.35 system-ui,sans-serif;box-shadow:0 10px 36px rgba(0,0,0,.65);border:2px solid #22c55e;pointer-events:none";
 
   panel.innerHTML = `
-    <div id="suno-bm-drag-handle" style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px 10px;cursor:move;user-select:none;pointer-events:auto;border-bottom:1px solid #222;background:#111;border-radius:14px 14px 0 0">
+    <div id="suno-bm-drag-handle" style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;cursor:move;user-select:none;pointer-events:auto;border-bottom:1px solid #166534;background:linear-gradient(135deg,#0f2a18,#071009);border-radius:10px 10px 0 0">
       <div>
-        <div style="font-weight:700;font-size:14px">⬇ Suno WAV Downloader</div>
-        <div style="font-size:10px;color:#666;margin-top:2px">⋯ → WAV Audio Pro → Download File</div>
+        <div style="font-weight:800;font-size:12px;color:#4ade80;letter-spacing:.04em">⬇ WAV DOWNLOADER</div>
+        <div style="font-size:9px;color:#86efac;margin-top:1px">playlist · ⋯ → WAV → File</div>
       </div>
-      <div style="display:flex;gap:6px;align-items:center">
-        <span id="suno-bm-state-badge" style="font-size:10px;padding:3px 8px;border-radius:999px;background:#333;color:#ccc;font-weight:600">READY</span>
-        <button type="button" id="suno-bm-collapse" style="padding:2px 8px;cursor:pointer;background:#222;border:1px solid #444;border-radius:6px;color:#aaa;font-size:11px;pointer-events:auto">−</button>
+      <div style="display:flex;gap:4px;align-items:center">
+        <span id="suno-bm-state-badge" style="font-size:9px;padding:2px 7px;border-radius:999px;background:#14532d;color:#bbf7d0;font-weight:700">READY</span>
+        <button type="button" id="suno-bm-collapse" style="padding:1px 7px;cursor:pointer;background:#14532d;border:1px solid #22c55e;border-radius:5px;color:#bbf7d0;font-size:11px;pointer-events:auto">−</button>
       </div>
     </div>
     <div id="suno-bm-body" style="overflow:auto;flex:1 1 auto;min-height:0">
-      <div style="padding:10px 14px 0">
-        <div id="suno-bm-page-line" style="color:#8cf;font-size:11px;margin-bottom:8px;line-height:1.4"></div>
+      <div style="padding:7px 9px 0">
+        <div id="suno-bm-page-line" style="color:#86efac;font-size:10px;margin-bottom:5px;line-height:1.35;font-weight:600"></div>
 
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-bottom:8px;text-align:center;font-size:11px">
-          <div style="background:#161616;border-radius:8px;padding:5px 3px;border:1px solid #222"><div style="color:#666;font-size:9px">SAVED</div><div id="suno-bm-stat-done" style="color:#6f6;font-weight:700;font-size:16px">0</div></div>
-          <div style="background:#161616;border-radius:8px;padding:5px 3px;border:1px solid #222"><div style="color:#666;font-size:9px">LEFT</div><div id="suno-bm-stat-left" style="color:#fc8;font-weight:700;font-size:16px">0</div></div>
-          <div style="background:#161616;border-radius:8px;padding:5px 3px;border:1px solid #222"><div style="color:#666;font-size:9px">SEEN</div><div id="suno-bm-stat-seen" style="color:#8cf;font-weight:700;font-size:16px">0</div></div>
-          <div style="background:#161616;border-radius:8px;padding:5px 3px;border:1px solid #222"><div style="color:#666;font-size:9px">IN VIEW</div><div id="suno-bm-stat-visible" style="color:#ccf;font-weight:700;font-size:16px">0</div></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin-bottom:5px;text-align:center;font-size:10px">
+          <div style="background:#0f1f14;border-radius:6px;padding:4px 2px;border:1px solid #166534"><div style="color:#6ee7a0;font-size:8px">SAVED</div><div id="suno-bm-stat-done" style="color:#4ade80;font-weight:800;font-size:15px">0</div></div>
+          <div style="background:#1f1408;border-radius:6px;padding:4px 2px;border:1px solid #854d0e"><div style="color:#fcd34d;font-size:8px">LEFT</div><div id="suno-bm-stat-left" style="color:#fbbf24;font-weight:800;font-size:15px">0</div></div>
+          <div style="background:#0a1628;border-radius:6px;padding:4px 2px;border:1px solid #1d4ed8"><div style="color:#93c5fd;font-size:8px">SEEN</div><div id="suno-bm-stat-seen" style="color:#60a5fa;font-weight:800;font-size:15px">0</div></div>
         </div>
 
-        <div style="font-size:10px;color:#666;margin-bottom:2px">Scroll position</div>
-        <div style="background:#1a1a1a;border-radius:6px;height:6px;overflow:hidden;margin-bottom:2px;border:1px solid #222">
-          <div id="suno-bm-scroll-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#336,#58c);transition:width .3s"></div>
+        <div style="background:#0f1f14;border-radius:6px;height:8px;overflow:hidden;margin-bottom:2px;border:1px solid #166534">
+          <div id="suno-bm-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#15803d,#4ade80);transition:width .3s"></div>
         </div>
-        <div id="suno-bm-scroll-bar-text" style="font-size:10px;color:#777;margin-bottom:8px">List scroll: 0%</div>
+        <div id="suno-bm-bar-text" style="font-size:9px;color:#86efac;margin-bottom:4px">Saved 0 / 0</div>
 
-        <div style="font-size:10px;color:#666;margin-bottom:2px">Download coverage</div>
-        <div style="background:#1a1a1a;border-radius:6px;height:10px;overflow:hidden;margin-bottom:2px;border:1px solid #222">
-          <div id="suno-bm-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#1a6,#4d4);transition:width .3s"></div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <div style="flex:1;background:#0a1628;border-radius:5px;height:5px;overflow:hidden;border:1px solid #1e3a8a">
+            <div id="suno-bm-scroll-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#1d4ed8,#60a5fa);transition:width .3s"></div>
+          </div>
+          <span id="suno-bm-scroll-bar-text" style="font-size:8px;color:#93c5fd;white-space:nowrap">0%</span>
         </div>
-        <div id="suno-bm-bar-text" style="font-size:10px;color:#888;margin-bottom:8px">Saved 0 / 0 seen</div>
 
-        <div id="suno-bm-eta-line" style="color:#9a9;font-size:10px;margin-bottom:4px;line-height:1.4"></div>
-        <div id="suno-bm-session-line" style="color:#666;font-size:10px;margin-bottom:6px;line-height:1.4"></div>
-        <div id="suno-bm-coverage-line" style="color:#7a7;font-size:10px;margin-bottom:4px;line-height:1.4"></div>
-        <div id="suno-bm-mode-line" style="color:#585;font-size:10px;margin-bottom:8px;line-height:1.4"></div>
+        <div id="suno-bm-status-line" style="color:#fde68a;font-size:10px;min-height:24px;padding:5px 7px;background:#1a1208;border-radius:6px;border:1px solid #854d0e;margin-bottom:5px;line-height:1.35;font-weight:600"></div>
+        <div id="suno-bm-flow-dots" style="font-size:9px;color:#4ade80;margin-bottom:4px;font-weight:600">⋯ → WAV → File</div>
+        <div id="suno-bm-eta-line" style="color:#9ca3af;font-size:9px;margin-bottom:2px;line-height:1.3"></div>
+        <div id="suno-bm-coverage-line" style="color:#6ee7a0;font-size:9px;margin-bottom:2px;line-height:1.3"></div>
+        <div id="suno-bm-mode-line" style="color:#64748b;font-size:8px;margin-bottom:5px;line-height:1.3"></div>
 
-        <div id="suno-bm-status-line" style="color:#fc8;font-size:11px;min-height:28px;padding:6px 8px;background:#141414;border-radius:8px;border:1px solid #282828;margin-bottom:10px;line-height:1.4"></div>
-
-        <details style="font-size:10px;margin-bottom:10px;pointer-events:auto">
-          <summary style="cursor:pointer;color:#888;margin-bottom:6px">Now playing · extra stats · logs</summary>
-          <div style="background:#141414;border:1px solid #252525;border-radius:10px;padding:8px 10px;margin-bottom:8px">
-            <div style="font-size:10px;color:#666;margin-bottom:4px">NOW PLAYING</div>
-            <div id="suno-bm-current-song" style="font-size:13px;font-weight:600;color:#eee;margin-bottom:4px">—</div>
-            <div id="suno-bm-current-step" style="font-size:11px;color:#fc8;margin-bottom:6px">Idle</div>
-            <div id="suno-bm-flow-dots" style="font-size:11px;color:#666">⋯ → WAV → File</div>
+        <details style="font-size:9px;margin-bottom:5px;pointer-events:auto">
+          <summary style="cursor:pointer;color:#86efac;margin-bottom:4px">More stats · logs · help</summary>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin-bottom:5px;text-align:center">
+            <div style="background:#1f1010;border-radius:5px;padding:3px;border:1px solid #7f1d1d"><div style="color:#fca5a5;font-size:8px">ERR</div><div id="suno-bm-stat-err" style="color:#f87171;font-weight:700;font-size:12px">0</div></div>
+            <div style="background:#141414;border-radius:5px;padding:3px;border:1px solid #333"><div style="color:#aaa;font-size:8px">SKIP</div><div id="suno-bm-stat-skip" style="color:#ccc;font-weight:700;font-size:12px">0</div></div>
+            <div style="background:#1f1408;border-radius:5px;padding:3px;border:1px solid #854d0e"><div style="color:#fcd34d;font-size:8px">FAIL</div><div id="suno-bm-stat-failed" style="color:#fbbf24;font-weight:700;font-size:12px">0</div></div>
           </div>
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-bottom:8px;text-align:center;font-size:11px">
-            <div style="background:#161616;border-radius:8px;padding:5px 3px;border:1px solid #222"><div style="color:#666;font-size:9px">ERRORS</div><div id="suno-bm-stat-err" style="color:#f88;font-weight:700;font-size:14px">0</div></div>
-            <div style="background:#161616;border-radius:8px;padding:5px 3px;border:1px solid #222"><div style="color:#666;font-size:9px">SKIPPED</div><div id="suno-bm-stat-skip" style="color:#aaa;font-weight:700;font-size:14px">0</div></div>
-            <div style="background:#161616;border-radius:8px;padding:5px 3px;border:1px solid #222"><div style="color:#666;font-size:9px">FAILED</div><div id="suno-bm-stat-failed" style="color:#f96;font-weight:700;font-size:14px">0</div></div>
-            <div style="background:#161616;border-radius:8px;padding:5px 3px;border:1px solid #222"><div style="color:#666;font-size:9px">PASSES</div><div id="suno-bm-stat-batch" style="color:#aaa;font-weight:700;font-size:14px">0</div></div>
+          <div style="font-size:9px;color:#666;margin-bottom:2px">NOW: <span id="suno-bm-current-song" style="color:#eee">—</span> · <span id="suno-bm-current-step" style="color:#fcd34d">Idle</span></div>
+          <div id="suno-bm-session-line" style="color:#666;font-size:8px;margin-bottom:4px"></div>
+          <span id="suno-bm-stat-visible" style="display:none">0</span>
+          <span id="suno-bm-stat-batch" style="display:none">0</span>
+          <div id="suno-bm-log-count" style="font-size:8px;color:#777;margin-bottom:3px">0 logs</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-bottom:4px">
+            <button type="button" id="suno-bm-copy-logs" style="padding:4px;cursor:pointer;background:#0f172a;color:#93c5fd;border:1px solid #1d4ed8;border-radius:5px;font-size:9px;pointer-events:auto">Copy</button>
+            <button type="button" id="suno-bm-dl-logs" style="padding:4px;cursor:pointer;background:#0f172a;color:#93c5fd;border:1px solid #1d4ed8;border-radius:5px;font-size:9px;pointer-events:auto">Save</button>
+            <button type="button" id="suno-bm-clear-logs" style="padding:4px;cursor:pointer;background:#222;color:#aaa;border:1px solid #444;border-radius:5px;font-size:9px;pointer-events:auto">Clear</button>
           </div>
-          <div id="suno-bm-log-count" style="font-size:10px;color:#777;margin-bottom:4px">0 log entries</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:6px">
-            <button type="button" id="suno-bm-copy-logs" style="padding:6px;cursor:pointer;background:#1a1a2a;color:#acf;border:1px solid #345;border-radius:7px;font-size:10px;pointer-events:auto">Copy logs</button>
-            <button type="button" id="suno-bm-dl-logs" style="padding:6px;cursor:pointer;background:#1a1a2a;color:#acf;border:1px solid #345;border-radius:7px;font-size:10px;pointer-events:auto">Save .txt</button>
-            <button type="button" id="suno-bm-clear-logs" style="padding:6px;cursor:pointer;background:#222;color:#aaa;border:1px solid #444;border-radius:7px;font-size:10px;pointer-events:auto">Clear</button>
-          </div>
-          <pre id="suno-bm-log-preview" style="max-height:100px;overflow:auto;font-size:9px;color:#888;background:#111;padding:6px;border-radius:6px;border:1px solid #222;white-space:pre-wrap;margin:0">(no logs yet)</pre>
-        </details>
-
-        <details style="font-size:10px;color:#666;line-height:1.5;margin-bottom:10px;pointer-events:auto">
-          <summary style="cursor:pointer;color:#888;margin-bottom:4px">Help & requirements</summary>
-          <ul style="margin:4px 0 0;padding-left:16px;color:#777">
-            <li>Allow multiple downloads on suno.com in Chrome settings</li>
-            <li>~8–15 seconds per song · leave tab open while running</li>
-            <li>Smart scroll skips saved blocks · 2nd pass catches misses</li>
-            <li>Resume continues from saved scroll position</li>
-            <li>Reset clears saved IDs (re-downloads everything)</li>
-            <li>Filter console to <code style="color:#8a8">[SunoDL]</code> for live logs</li>
-          </ul>
+          <pre id="suno-bm-log-preview" style="max-height:70px;overflow:auto;font-size:8px;color:#888;background:#0a0a0a;padding:4px;border-radius:5px;border:1px solid #222;white-space:pre-wrap;margin:0">(no logs)</pre>
         </details>
       </div>
     </div>
-    <div id="suno-bm-actions" style="flex:0 0 auto;padding:10px 14px 12px;border-top:1px solid #222;background:#111;border-radius:0 0 14px 14px;pointer-events:auto">
-      <button type="button" id="suno-bm-all" style="width:100%;padding:11px 12px;margin-bottom:6px;cursor:pointer;background:#163;color:#fff;border:1px solid #3a5;border-radius:8px;font-weight:700;font-size:13px">▶ Download ALL — smart scroll full library</button>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-        <button type="button" id="suno-bm-resume" style="padding:8px;cursor:pointer;background:#1a3a1a;color:#afa;border:1px solid #383;border-radius:8px;font-weight:600">↻ Resume</button>
-        <button type="button" id="suno-bm-stop" disabled style="padding:8px;cursor:pointer;background:#3a1a1a;color:#faa;border:1px solid #633;border-radius:8px;font-weight:600">■ Stop</button>
+    <div id="suno-bm-actions" style="flex:0 0 auto;padding:7px 9px 9px;border-top:1px solid #166534;background:#0a1a10;border-radius:0 0 10px 10px;pointer-events:auto">
+      <button type="button" id="suno-bm-all" style="width:100%;padding:9px 10px;margin-bottom:5px;cursor:pointer;background:#15803d;color:#fff;border:1px solid #4ade80;border-radius:7px;font-weight:800;font-size:12px">▶ Download This Playlist</button>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px">
+        <button type="button" id="suno-bm-resume" style="padding:7px;cursor:pointer;background:#14532d;color:#bbf7d0;border:1px solid #22c55e;border-radius:6px;font-weight:700;font-size:10px">↻ Resume</button>
+        <button type="button" id="suno-bm-stop" disabled style="padding:7px;cursor:pointer;background:#450a0a;color:#fca5a5;border:1px solid #ef4444;border-radius:6px;font-weight:700;font-size:10px">■ Stop</button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:5px">
-        <button type="button" id="suno-bm-reset" style="padding:7px 4px;cursor:pointer;background:#222;color:#ccc;border:1px solid #444;border-radius:7px;font-size:11px">Reset all</button>
-        <button type="button" id="suno-bm-retry" style="padding:7px 4px;cursor:pointer;background:#2a2010;color:#fc8;border:1px solid #643;border-radius:7px;font-size:11px">Retry failed</button>
-        <button type="button" id="suno-bm-onepass" style="padding:7px 4px;cursor:pointer;background:#1a1a2a;color:#acf;border:1px solid #345;border-radius:7px;font-size:11px">One pass</button>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">
-        <button type="button" id="suno-bm-test1" style="padding:7px 4px;cursor:pointer;background:#2a2211;color:#eca;border:1px solid #543;border-radius:7px;font-size:11px">Test 1</button>
-        <button type="button" id="suno-bm-test1921" style="padding:7px 4px;cursor:pointer;background:#2a2211;color:#eca;border:1px solid #543;border-radius:7px;font-size:11px">Test 2</button>
-      </div>
+      <details id="suno-bm-delays" style="pointer-events:auto;margin-bottom:4px">
+        <summary style="cursor:pointer;color:#86efac;font-size:9px;margin-bottom:4px;font-weight:600">Wait times (seconds)</summary>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;font-size:9px;color:#bbf7d0;margin-bottom:4px">
+          <label title="Max wait for Download item after ⋯">① Menu<input id="suno-bm-delay-menu" type="number" min="3" max="30" step="1" value="12" style="padding:3px;border-radius:4px;border:1px solid #166534;background:#051008;color:#ecfdf5;width:100%;box-sizing:border-box;margin-top:2px"></label>
+          <label title="Short pause after each action">Settle<input id="suno-bm-delay-settle" type="number" min="0.1" max="2" step="0.1" value="0.25" style="padding:3px;border-radius:4px;border:1px solid #166534;background:#051008;color:#ecfdf5;width:100%;box-sizing:border-box;margin-top:2px"></label>
+          <label title="Longer pause on retries">Settle+ <input id="suno-bm-delay-settle-max" type="number" min="0.2" max="3" step="0.1" value="0.7" style="padding:3px;border-radius:4px;border:1px solid #166534;background:#051008;color:#ecfdf5;width:100%;box-sizing:border-box;margin-top:2px"></label>
+          <label title="Max wait for Download File modal">Modal<input id="suno-bm-delay-modal" type="number" min="5" max="45" step="1" value="20" style="padding:3px;border-radius:4px;border:1px solid #166534;background:#051008;color:#ecfdf5;width:100%;box-sizing:border-box;margin-top:2px"></label>
+        </div>
+        <details id="suno-bm-delay-wav-section" style="margin-top:2px">
+          <summary style="cursor:pointer;color:#fde68a;font-size:9px;font-weight:600">② Second menu (Download → WAV)</summary>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;font-size:9px;color:#fde68a;margin-top:4px">
+            <label title="Max wait for WAV submenu to appear">WAV wait<input id="suno-bm-delay-wav" type="number" min="3" max="30" step="1" value="12" style="padding:3px;border-radius:4px;border:1px solid #854d0e;background:#1a1208;color:#fef3c7;width:100%;box-sizing:border-box;margin-top:2px"></label>
+            <label title="Pause between hover attempts">Hover<input id="suno-bm-delay-hover-step" type="number" min="0.05" max="1" step="0.05" value="0.15" style="padding:3px;border-radius:4px;border:1px solid #854d0e;background:#1a1208;color:#fef3c7;width:100%;box-sizing:border-box;margin-top:2px"></label>
+          </div>
+        </details>
+      </details>
+      <details style="pointer-events:auto">
+        <summary style="cursor:pointer;color:#86efac;font-size:9px;margin-bottom:4px">Tests · reset · retry</summary>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;margin-bottom:3px">
+          <button type="button" id="suno-bm-test1" style="padding:6px;cursor:pointer;background:#422006;color:#fde68a;border:1px solid #ca8a04;border-radius:5px;font-size:9px">Test 1</button>
+          <button type="button" id="suno-bm-test1921" style="padding:6px;cursor:pointer;background:#422006;color:#fde68a;border:1px solid #ca8a04;border-radius:5px;font-size:9px">Test 2</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px">
+          <button type="button" id="suno-bm-reset" style="padding:5px;cursor:pointer;background:#222;color:#ccc;border:1px solid #444;border-radius:5px;font-size:9px">Reset playlist</button>
+          <button type="button" id="suno-bm-retry" style="padding:5px;cursor:pointer;background:#422006;color:#fde68a;border:1px solid #854d0e;border-radius:5px;font-size:9px">Retry</button>
+          <button type="button" id="suno-bm-onepass" style="padding:5px;cursor:pointer;background:#0f172a;color:#93c5fd;border:1px solid #1d4ed8;border-radius:5px;font-size:9px">1 pass</button>
+        </div>
+      </details>
     </div>
   `;
   document.body.appendChild(panel);
@@ -2231,17 +2668,33 @@
     ui.collapseBtn.textContent = panelCollapsed ? "+" : "−";
   };
 
-  function startDownloadAll(freshStart) {
-    if (freshStart) sessionStorage.removeItem(CFG.scrollPosKey);
-    setPlan({ ...defaultPlan(), freshStart: !!freshStart });
+  function startDownloadPlaylist(freshStart) {
+    applyDelaysFromPanel();
+    saveListMeta();
+    if (blockIfPlaylistDone()) return;
+    if (freshStart) saveScrollPos(0);
+    setPlan({ ...defaultPlan(), mode: "playlist", freshStart: !!freshStart });
+    statusMsg(`Starting this playlist only: "${getListLabel()}"…`);
     downloadAllLoop();
   }
 
-  document.getElementById("suno-bm-test1").onclick = () => testOneSong();
-  document.getElementById("suno-bm-test1921").onclick = () => testLastAndFirst();
-  document.getElementById("suno-bm-all").onclick = () => startDownloadAll(true);
-  document.getElementById("suno-bm-resume").onclick = () => startDownloadAll(false);
-  document.getElementById("suno-bm-onepass").onclick = () => startOnePass();
+  restoreDelayPanelUi();
+  bindDelayPanelUi();
+
+  document.getElementById("suno-bm-test1").onclick = () => {
+    applyDelaysFromPanel();
+    testOneSong();
+  };
+  document.getElementById("suno-bm-test1921").onclick = () => {
+    applyDelaysFromPanel();
+    testLastAndFirst();
+  };
+  document.getElementById("suno-bm-all").onclick = () => startDownloadPlaylist(true);
+  document.getElementById("suno-bm-resume").onclick = () => startDownloadPlaylist(false);
+  document.getElementById("suno-bm-onepass").onclick = () => {
+    applyDelaysFromPanel();
+    startOnePass();
+  };
   document.getElementById("suno-bm-retry").onclick = () => retryFailedSongs();
   document.getElementById("suno-bm-copy-logs").onclick = () => copyLogs().catch((e) => alert("Copy failed: " + e.message));
   document.getElementById("suno-bm-dl-logs").onclick = () => downloadLogFile();
@@ -2252,16 +2705,13 @@
     statusMsg("Stopping…");
   };
   document.getElementById("suno-bm-reset").onclick = () => {
-    sessionStorage.removeItem(CFG.doneKey);
-    sessionStorage.removeItem(CFG.statsKey);
-    sessionStorage.removeItem(CFG.seenKey);
-    sessionStorage.removeItem(CFG.failedKey);
-    sessionStorage.removeItem(CFG.scrollPosKey);
+    const name = getListLabel();
+    if (!confirm(`Reset "${name}"?\n\nClears saved progress for this playlist so it can download again.\nOther playlists stay marked done.`)) return;
+    resetPlaylistRecord();
     sessionStorage.removeItem(CFG.logKey);
-    sessionStorage.removeItem(CFG.listMetaKey);
     setPlan(defaultPlan());
     saveListMeta();
-    refreshPanel("Reset complete");
+    refreshPanel("Reset — this playlist only");
   };
 
   window.__sunoDlGetLogs = exportLogsText;
@@ -2275,10 +2725,24 @@
     }
   } catch (_) {}
 
+  migrateLegacySessionStorage();
+  reconcilePlaylistRecords();
+  saveListMeta();
   refreshPanel("Ready");
 
-  if (isAutorun()) {
-    statusMsg("Auto-resuming…");
-    setTimeout(() => downloadAllLoop(), 2000);
+  try {
+    sessionStorage.setItem("suno-bm-loader", "(" + sunoDownloadMain.toString() + ")();");
+    sessionStorage.setItem("suno-bm-loader-ver", String(LOADER_VERSION));
+  } catch (_) {}
+
+  if (isAutorunForCurrentPlaylist()) {
+    if (blockIfPlaylistDone()) {
+      clearAutorun();
+    } else {
+      statusMsg("Auto-resuming this playlist…");
+      setTimeout(() => downloadAllLoop(), 2000);
+    }
+  } else if (isAutorun()) {
+    clearAutorun();
   }
 })();

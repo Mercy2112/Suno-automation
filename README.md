@@ -21,12 +21,14 @@ Batch-create songs on Suno from a pasted collection.
 
 ## 2. Download songs — `download-songs.js`
 
-Auto-download MP3s from your Suno workspace across pages.
+Download **every song in the open playlist** (WAV). Stops automatically when all are saved.
 
-1. Open your Suno workspace (`?page=1`)
+1. Open your **playlist** in Suno (breadcrumb shows playlist name + song count)
 2. F12 → **Console**
 3. Paste all of `download-songs.js` → Enter
-4. Click **Download ALL** on the panel
+4. Click **▶ Download This Playlist**
+
+Green **click ring + cursor** shows each automated click. Scrolls the full list, second pass catches misses, then **stops when done**.
 
 Allow multiple downloads for `suno.com` in Chrome when prompted.
 
