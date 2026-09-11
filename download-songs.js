@@ -1,11 +1,11 @@
 // ============================================================
 // Paste in F12 Console on your OPEN PLAYLIST / song list page
-// ▶ Download This Playlist — scrolls list, downloads every song, stops when done
+// ▶ Download This Playlist — scrolls list, downloads every song as MP3, stops when done
 // Shows green click ring + cursor on each automated click
 // ============================================================
 
 (function sunoDownloadMain() {
-  const LOADER_VERSION = 7;
+  const LOADER_VERSION = 9;
 
   if (!/suno\.com/i.test(location.href)) {
     alert("Open your Suno workspace page first.");
@@ -167,7 +167,7 @@
     const logs = getLogs();
     const stats = getStats();
     const header = [
-      "Suno WAV Download log",
+      "Suno MP3 Download log",
       `Exported: ${new Date().toISOString()}`,
       `URL: ${location.href}`,
       `Saved: ${getDoneSet().size} · Seen: ${getSeenSet().size} · Errors: ${stats.errors}`,
@@ -595,7 +595,7 @@
       `✓ Playlist finished: "${name}"\n\n` +
       `All songs in THIS playlist are saved — nothing will download twice.\n\n` +
       `STOPPED. The script does not move on to another playlist.\n` +
-      `Move WAV files into this playlist's folder now.\n\n` +
+      `Move MP3 files into this playlist's folder now.\n\n` +
       `To download a different playlist: open it yourself in Suno, paste the script, click Download.\n\n` +
       `To run this same playlist again: click Reset playlist first.`
     );
@@ -714,13 +714,13 @@
     const dl = text.match(/· ([^·\n]+?) · downloading/i);
     if (dl) panelMeta.currentSong = dl[1].trim();
     const titled = text.match(/\| ([^|]+)$/);
-    if (titled && /More -> WAV/i.test(text)) panelMeta.currentSong = titled[1].trim();
+    if (titled && /More -> (WAV|MP3)/i.test(text)) panelMeta.currentSong = titled[1].trim();
     if (/Hover Download/i.test(text)) panelMeta.currentStep = "⋯ → Download menu";
-    else if (/Click WAV/i.test(text)) panelMeta.currentStep = "WAV Audio Pro";
+    else if (/Click (WAV|MP3)/i.test(text)) panelMeta.currentStep = "MP3 Audio";
     else if (/Download File modal|Click Download File/i.test(text)) panelMeta.currentStep = "Download File modal";
     else if (/Smart skip/i.test(text)) panelMeta.currentStep = "Smart skip (saved block)";
     else if (/Smart jump/i.test(text)) panelMeta.currentStep = "Smart jump to song";
-    else if (/downloading/i.test(text)) panelMeta.currentStep = "Downloading WAV…";
+    else if (/downloading/i.test(text)) panelMeta.currentStep = "Downloading MP3…";
     else if (/Stopped/i.test(text)) panelMeta.currentStep = "Stopped";
     else if (/FINISHED|All done/i.test(text)) panelMeta.currentStep = "Complete";
     else if (/Pass done/i.test(text)) panelMeta.currentStep = "Between passes";
@@ -873,11 +873,11 @@
 
     if (ui.flowDots) {
       const step = panelMeta.currentStep;
-      const s1 = /Download menu|WAV|File|Downloading/.test(step) ? "#6f6" : "#444";
-      const s2 = /WAV|File|Downloading/.test(step) ? "#6f6" : "#444";
+      const s1 = /Download menu|WAV|MP3|File|Downloading/.test(step) ? "#6f6" : "#444";
+      const s2 = /WAV|MP3|File|Downloading/.test(step) ? "#6f6" : "#444";
       const s3 = /File|Downloading/.test(step) && !/modal/.test(step) ? "#6f6" : /Download File/.test(step) ? "#fc8" : "#444";
       ui.flowDots.innerHTML =
-        `<span style="color:${s1}">⋯</span> → <span style="color:${s2}">WAV</span> → <span style="color:${s3}">File</span>`;
+        `<span style="color:${s1}">⋯</span> → <span style="color:${s2}">MP3</span> → <span style="color:${s3}">File</span>`;
     }
 
     if (ui.etaLine) {
@@ -885,7 +885,7 @@
       ui.etaLine.textContent = left
         ? `Est. ${formatEta(left * sec)} left · ~${sec}s typical · waits for UI ready`
         : seen
-          ? `Playlist progress — verify .wav files in Downloads folder`
+          ? `Playlist progress — verify .mp3 files in Downloads folder`
           : `Open a playlist · click Download This Playlist`;
     }
 
@@ -908,7 +908,7 @@
       ui.modeLine.textContent = running
         ? "Working: batch visible songs → smart skip saved blocks → 2nd pass if needed"
         : playlistDone
-          ? "Finished — move WAVs to folder · script stopped (won't open another playlist)"
+          ? "Finished — move MP3s to folder · script stopped (won't open another playlist)"
           : "One playlist only · skips already saved · stops when every song is done";
     }
 
@@ -966,7 +966,7 @@
   }
 
   function uiIsIdle() {
-    return listVisibleMenus().length === 0 && !isWavDownloadModalOpen();
+    return listVisibleMenus().length === 0 && !isDownloadModalOpen();
   }
 
   async function waitForMenusClosed(timeout = CFG.menuOpenTimeout) {
@@ -1406,7 +1406,7 @@
 
     for (const el of document.querySelectorAll("button, [role='button']")) {
       if (el.closest("#suno-bm-panel")) continue;
-      if (el.closest('[role="dialog"]') && isWavDownloadModalOpen()) continue;
+      if (el.closest('[role="dialog"]') && isDownloadModalOpen()) continue;
       if (isInPlayerBar(el)) {
         const label = buttonLabel(el);
         const aria = el.getAttribute("aria-label") || "";
@@ -1646,18 +1646,19 @@
     const roots = getVisibleMenuRoots();
     return roots.find((m) => {
       const t = m.textContent || "";
-      return /WAV/i.test(t) && (/MP3/i.test(t) || /Audio/i.test(t)) && !/Remix/i.test(t);
+      return (/MP3/i.test(t) || /WAV/i.test(t)) && /Audio/i.test(t) && !/Remix/i.test(t);
     });
   }
 
-  function isWavMenuItem(el) {
+  function isMp3MenuItem(el) {
     const blob = menuItemLabel(el);
     if (!blob) return false;
-    if (/MP3/i.test(blob)) return false;
-    return /WAV/i.test(blob) && (/Audio/i.test(blob) || /Pro/i.test(blob));
+    if (/WAV/i.test(blob)) return false;
+    if (/Stem|Video|MIDI|Video/i.test(blob)) return false;
+    return /MP3/i.test(blob) && (/Audio/i.test(blob) || /Pro/i.test(blob) || /^MP3\b/i.test(blob));
   }
 
-  function findWavItem() {
+  function findMp3Item() {
     const roots = getVisibleMenuRoots();
     const searchIn = roots.length ? roots : [document.body];
     for (const scope of searchIn) {
@@ -1665,7 +1666,7 @@
         if (el.closest("#suno-bm-panel")) continue;
         const r = el.getBoundingClientRect();
         if (r.width < 2 || r.height < 2) continue;
-        if (isWavMenuItem(el)) return menuItemClickTarget(el);
+        if (isMp3MenuItem(el)) return menuItemClickTarget(el);
       }
     }
     return null;
@@ -1686,11 +1687,45 @@
     return ((el.textContent || "") + " " + (el.getAttribute("aria-label") || "")).replace(/\s+/g, " ").trim();
   }
 
-  function isWavDownloadModalOpen() {
-    return /Download WAV Audio/i.test(document.body.innerText || "");
+  function isDownloadFormatModalOpen() {
+    const text = document.body.innerText || "";
+    return (
+      /Unlock\s*&\s*Download/i.test(text) ||
+      (/\bM4A\b/i.test(text) && /\bMP3\b/i.test(text) && /\bWAV\b/i.test(text) && /\bDownload\b/i.test(text))
+    );
   }
 
-  function findWavModal() {
+  function isDownloadModalOpen() {
+    if (isDownloadFormatModalOpen()) return true;
+    return /Download (MP3|WAV) Audio/i.test(document.body.innerText || "");
+  }
+
+  function findDownloadFormatModal() {
+    const selectors = [
+      '[role="dialog"]',
+      '[role="alertdialog"]',
+      '[data-radix-dialog-content]',
+      '[data-state="open"]',
+    ];
+    for (const sel of selectors) {
+      const hit = [...document.querySelectorAll(sel)].find((el) => {
+        if (el.closest("#suno-bm-panel")) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < 120 || r.height < 120) return false;
+        const t = el.textContent || "";
+        return (
+          /Unlock\s*&\s*Download/i.test(t) ||
+          (/\bM4A\b/i.test(t) && /\bMP3\b/i.test(t) && /\bWAV\b/i.test(t))
+        );
+      });
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function findDownloadModal() {
+    const format = findDownloadFormatModal();
+    if (format) return format;
     const selectors = [
       '[role="dialog"]',
       '[role="alertdialog"]',
@@ -1702,20 +1737,11 @@
         if (el.closest("#suno-bm-panel")) return false;
         const r = el.getBoundingClientRect();
         if (r.width < 80 || r.height < 60) return false;
-        return /Download WAV Audio/i.test(el.textContent || "");
+        return /Download (MP3|WAV) Audio/i.test(el.textContent || "");
       });
       if (hit) return hit;
     }
-
-    return (
-      [...document.querySelectorAll("h1,h2,h3,h4,p,div,span")].find((el) => {
-        if (el.closest("#suno-bm-panel")) return false;
-        const t = (el.textContent || "").trim();
-        if (!/^Download WAV Audio$/i.test(t)) return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      })?.closest('[role="dialog"], [data-radix-dialog-content], [data-radix-portal] > div') || null
-    );
+    return null;
   }
 
   function isDownloadFileLabel(text) {
@@ -1743,15 +1769,15 @@
     if (!el || el.closest("#suno-bm-panel") || el.closest('[role="rowgroup"]')) return false;
     if (isInPlayerBar(el)) return false;
     if (!isDownloadFileLabel(buttonLabel(el))) return false;
-    const modal = findWavModal();
+    const modal = findDownloadModal();
     if (modal && !modal.contains(el)) return false;
     return isClickable(el);
   }
 
   function findDownloadFileButton() {
-    if (!isWavDownloadModalOpen()) return null;
+    if (!isDownloadModalOpen()) return null;
 
-    const modal = findWavModal();
+    const modal = findDownloadModal();
     if (!modal) return null;
 
     const candidates = [];
@@ -1786,8 +1812,8 @@
   }
 
   async function clickModalButtonOnce(btn, label) {
-    const modal = findWavModal();
-    if (!modal) throw new Error("WAV modal not found");
+    const modal = findDownloadModal();
+    if (!modal) throw new Error("Download modal not found");
     if (!modal.contains(btn)) throw new Error("Download File not inside modal");
 
     const { cx, cy } = pointerCoords(btn);
@@ -1923,10 +1949,10 @@
   async function waitForModalClose(timeout = CFG.modalCloseTimeout) {
     const start = Date.now();
     while (Date.now() - start < timeout) {
-      if (!isWavDownloadModalOpen()) return true;
+      if (!isDownloadModalOpen()) return true;
       await sleep(CFG.pollMs);
     }
-    return !isWavDownloadModalOpen();
+    return !isDownloadModalOpen();
   }
 
   async function clickDownloadFileButton(el) {
@@ -1964,7 +1990,7 @@
   }
 
   async function openMoreMenu(card) {
-    if (listVisibleMenus().length || isWavDownloadModalOpen()) {
+    if (listVisibleMenus().length || isDownloadModalOpen()) {
       await closeMenus();
     }
     scrollMoreBtnIntoView(card);
@@ -1989,51 +2015,121 @@
     throw new Error("menu after More options");
   }
 
-  async function openDownloadSubmenu(dl) {
-    statusMsg("Hover Download → WAV submenu…");
-    log("Download target:", menuItemLabel(dl));
-
-    const target = menuItemClickTarget(dl);
-    const { cx, cy } = pointerCoords(target);
-
-    for (let round = 0; round < 14; round++) {
-      await pointerEnter(target);
-      if (findWavItem()) {
-        logMenuState("WAV submenu open");
-        return;
-      }
-      if (round === 4) {
-        target.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, keyCode: 39 }));
-        await sleep(100);
-        target.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true, keyCode: 39 }));
-      }
-      if (round === 9) {
-        await hoverAt(target, cx - 90, cy);
-      }
-      await sleep(CFG.hoverStepMs);
-    }
-
-    await waitFor(findWavItem, "WAV submenu", CFG.wavSubmenuTimeout);
+  function isMp3OptionRow(el) {
+    const blob = ((el.textContent || "") + " " + (el.getAttribute("aria-label") || "")).replace(/\s+/g, " ").trim();
+    if (!blob || blob.length > 48) return false;
+    if (/Unlock|Manage|WAV|M4A|MP4|Stem|MIDI/i.test(blob)) return false;
+    return /^MP3$/i.test(blob) || /^MP3\b/i.test(blob);
   }
 
-  async function clickDownloadWavAndConfirm(dl) {
-    await openDownloadSubmenu(dl);
+  function findMp3OptionInModal(modal) {
+    const scope = modal || findDownloadFormatModal();
+    if (!scope) return null;
+    const candidates = [
+      ...scope.querySelectorAll(
+        '[role="radio"], [role="option"], [role="menuitemradio"], button, [role="button"], label, div, span'
+      ),
+    ];
+    let best = null;
+    for (const el of candidates) {
+      if (el.closest("#suno-bm-panel")) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 20 || r.height < 12) continue;
+      if (!isMp3OptionRow(el)) continue;
+      const clickable =
+        el.closest('[role="radio"], [role="option"], button, [role="button"], label') || el;
+      // Prefer shorter exact "MP3" labels
+      if (!best || (el.textContent || "").trim().length < (best.textContent || "").trim().length) {
+        best = clickable;
+      }
+    }
+    return best;
+  }
 
-    const wav = await waitFor(findWavItem, "WAV Audio", CFG.wavSubmenuTimeout);
-    statusMsg("Click WAV Audio…");
-    log("WAV target:", menuItemLabel(wav));
-    await menuPortalClick(wav, "WAV Audio");
-    pauseAllMedia();
+  function findUnlockDownloadButton(modal) {
+    const scope = modal || findDownloadFormatModal();
+    if (!scope) return null;
+    const buttons = [...scope.querySelectorAll("button, a, [role='button']")];
+    return (
+      buttons.find((el) => /Unlock\s*&\s*Download/i.test(buttonLabel(el)) && isClickable(el)) ||
+      buttons.find((el) => /^\s*Download\s*$/i.test(buttonLabel(el)) && isClickable(el)) ||
+      null
+    );
+  }
 
-    statusMsg("Waiting for Download File modal…");
-    const fileBtn = await waitFor(() => {
+  async function openDownloadFormatModal(dl) {
+    statusMsg("Click Download → format modal…");
+    log("Download target:", menuItemLabel(dl));
+    const target = menuItemClickTarget(dl);
+
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const already = findDownloadFormatModal();
+      if (already) {
+        log("Download modal already open");
+        return already;
+      }
+      await menuPortalClick(target, attempt === 1 ? "Download" : "Download retry");
+      try {
+        const modal = await waitFor(() => findDownloadFormatModal(), "Download format modal", 6000);
+        log("Download modal open");
+        return modal;
+      } catch (_) {
+        log("Download modal not open yet, attempt", attempt);
+        await settle(CFG.maxSettleMs);
+      }
+    }
+    throw new Error("Download format modal");
+  }
+
+  async function selectMp3InModal(modal) {
+    statusMsg("Select MP3…");
+    let scope = modal || findDownloadFormatModal();
+    let mp3 = findMp3OptionInModal(scope);
+    if (!mp3) {
+      mp3 = await waitFor(() => findMp3OptionInModal(findDownloadFormatModal()), "MP3 option", 8000);
+      scope = findDownloadFormatModal() || scope;
+    }
+    log("MP3 option:", (mp3.textContent || "").trim());
+    await clickTargetElement(mp3, "MP3");
+    await sleep(300);
+  }
+
+  async function clickUnlockAndDownload(modal) {
+    statusMsg("Click Unlock & Download…");
+    const btn =
+      findUnlockDownloadButton(modal) ||
+      (await waitFor(() => findUnlockDownloadButton(findDownloadFormatModal()), "Unlock & Download", 8000));
+    log("Confirm button:", buttonLabel(btn));
+    await clickTargetElement(btn, "Unlock & Download");
+
+    const startTs = Date.now();
+    while (Date.now() - startTs < CFG.wavModalTimeout) {
       pauseAllMedia();
-      const btn = findDownloadFileButton();
-      return btn && isClickable(btn) ? btn : null;
-    }, "Download File ready", CFG.wavModalTimeout);
-    statusMsg("Click Download File…");
-    log("Download File button:", buttonLabel(fileBtn));
-    await clickDownloadFileButton(fileBtn);
+      if (!findDownloadFormatModal()) {
+        log("Download modal closed — MP3 download started");
+        await settle(CFG.maxSettleMs);
+        return;
+      }
+      await sleep(CFG.pollMs);
+    }
+    if (findDownloadFormatModal()) {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(250);
+    }
+    await settle(CFG.maxSettleMs);
+  }
+
+  async function openDownloadSubmenu(dl) {
+    // Kept for compatibility — new UI opens a format modal instead of a hover submenu.
+    await openDownloadFormatModal(dl);
+  }
+
+  async function clickDownloadMp3AndConfirm(dl) {
+    const modal = await openDownloadFormatModal(dl);
+    pauseAllMedia();
+    await selectMp3InModal(modal || findDownloadFormatModal());
+    pauseAllMedia();
+    await clickUnlockAndDownload(findDownloadFormatModal() || modal);
     await waitForMenusClosed(CFG.menuOpenTimeout);
     await settle(CFG.maxSettleMs);
   }
@@ -2061,7 +2157,7 @@
     startPlayerGuard();
     try {
       const dl = await openMoreMenu(card);
-      await clickDownloadWavAndConfirm(dl);
+      await clickDownloadMp3AndConfirm(dl);
       await closeMenus();
       silencePlayer();
       await settle(CFG.maxSettleMs);
@@ -2333,7 +2429,7 @@
     alert(
       msg ||
         (complete
-          ? `${playlistDoneMessage(listName)}\n\n${expectedLine}Saved (clicks): ${savedInList}\nSeen: ${seen}\nErrors: ${stats.errors}\n\n${matchLine}Verify WAV files landed in your Downloads folder.`
+          ? `${playlistDoneMessage(listName)}\n\n${expectedLine}Saved (clicks): ${savedInList}\nSeen: ${seen}\nErrors: ${stats.errors}\n\n${matchLine}Verify MP3 files landed in your Downloads folder.`
           : `Not finished — "${listName}"\n\n` +
             expectedLine +
             `Saved in this list: ${savedInList}\n` +
@@ -2506,8 +2602,8 @@
   panel.innerHTML = `
     <div id="suno-bm-drag-handle" style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;cursor:move;user-select:none;pointer-events:auto;border-bottom:1px solid #166534;background:linear-gradient(135deg,#0f2a18,#071009);border-radius:10px 10px 0 0">
       <div>
-        <div style="font-weight:800;font-size:12px;color:#4ade80;letter-spacing:.04em">⬇ WAV DOWNLOADER</div>
-        <div style="font-size:9px;color:#86efac;margin-top:1px">playlist · ⋯ → WAV → File</div>
+        <div style="font-weight:800;font-size:12px;color:#4ade80;letter-spacing:.04em">⬇ MP3 DOWNLOADER</div>
+        <div style="font-size:9px;color:#86efac;margin-top:1px">playlist · ⋯ → Download → MP3</div>
       </div>
       <div style="display:flex;gap:4px;align-items:center">
         <span id="suno-bm-state-badge" style="font-size:9px;padding:2px 7px;border-radius:999px;background:#14532d;color:#bbf7d0;font-weight:700">READY</span>
@@ -2537,7 +2633,7 @@
         </div>
 
         <div id="suno-bm-status-line" style="color:#fde68a;font-size:10px;min-height:24px;padding:5px 7px;background:#1a1208;border-radius:6px;border:1px solid #854d0e;margin-bottom:5px;line-height:1.35;font-weight:600"></div>
-        <div id="suno-bm-flow-dots" style="font-size:9px;color:#4ade80;margin-bottom:4px;font-weight:600">⋯ → WAV → File</div>
+        <div id="suno-bm-flow-dots" style="font-size:9px;color:#4ade80;margin-bottom:4px;font-weight:600">⋯ → Download → MP3</div>
         <div id="suno-bm-eta-line" style="color:#9ca3af;font-size:9px;margin-bottom:2px;line-height:1.3"></div>
         <div id="suno-bm-coverage-line" style="color:#6ee7a0;font-size:9px;margin-bottom:2px;line-height:1.3"></div>
         <div id="suno-bm-mode-line" style="color:#64748b;font-size:8px;margin-bottom:5px;line-height:1.3"></div>
@@ -2578,9 +2674,9 @@
           <label title="Max wait for Download File modal">Modal<input id="suno-bm-delay-modal" type="number" min="5" max="45" step="1" value="20" style="padding:3px;border-radius:4px;border:1px solid #166534;background:#051008;color:#ecfdf5;width:100%;box-sizing:border-box;margin-top:2px"></label>
         </div>
         <details id="suno-bm-delay-wav-section" style="margin-top:2px">
-          <summary style="cursor:pointer;color:#fde68a;font-size:9px;font-weight:600">② Second menu (Download → WAV)</summary>
+          <summary style="cursor:pointer;color:#fde68a;font-size:9px;font-weight:600">② Format modal (Download → MP3)</summary>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;font-size:9px;color:#fde68a;margin-top:4px">
-            <label title="Max wait for WAV submenu to appear">WAV wait<input id="suno-bm-delay-wav" type="number" min="3" max="30" step="1" value="12" style="padding:3px;border-radius:4px;border:1px solid #854d0e;background:#1a1208;color:#fef3c7;width:100%;box-sizing:border-box;margin-top:2px"></label>
+            <label title="Max wait for MP3 submenu to appear">MP3 wait<input id="suno-bm-delay-wav" type="number" min="3" max="30" step="1" value="12" style="padding:3px;border-radius:4px;border:1px solid #854d0e;background:#1a1208;color:#fef3c7;width:100%;box-sizing:border-box;margin-top:2px"></label>
             <label title="Pause between hover attempts">Hover<input id="suno-bm-delay-hover-step" type="number" min="0.05" max="1" step="0.05" value="0.15" style="padding:3px;border-radius:4px;border:1px solid #854d0e;background:#1a1208;color:#fef3c7;width:100%;box-sizing:border-box;margin-top:2px"></label>
           </div>
         </details>
@@ -2717,7 +2813,7 @@
   window.__sunoDlGetLogs = exportLogsText;
   window.__sunoDlCopyLogs = copyLogs;
   window.__sunoDlGetPlaylistsDone = getCompletedPlaylists;
-  appendLog("info", "Suno WAV Downloader ready");
+  appendLog("info", "Suno MP3 Downloader ready");
 
   try {
     if (typeof chrome !== "undefined" && chrome.runtime?.id) {

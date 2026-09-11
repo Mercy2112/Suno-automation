@@ -21,14 +21,14 @@ Batch-create songs on Suno from a pasted collection.
 
 ## 2. Download songs — `download-songs.js`
 
-Download **every song in the open playlist** (WAV). Stops automatically when all are saved.
+Download **every song in the open playlist** (MP3). Stops automatically when all are saved.
 
 1. Open your **playlist** in Suno (breadcrumb shows playlist name + song count)
 2. F12 → **Console**
 3. Paste all of `download-songs.js` → Enter
 4. Click **▶ Download This Playlist**
 
-Green **click ring + cursor** shows each automated click. Scrolls the full list, second pass catches misses, then **stops when done**.
+Flow: **⋯ More → Download → select MP3 → Unlock & Download**. Green click ring shows each click. Scrolls the full list, then **stops when done**.
 
 Allow multiple downloads for `suno.com` in Chrome when prompted.
 
