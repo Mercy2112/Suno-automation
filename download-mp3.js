@@ -5,7 +5,7 @@
 // ============================================================
 
 (function sunoDownloadMain() {
-  const LOADER_VERSION = 13;
+  const LOADER_VERSION = 14;
 
   if (!/suno\.com/i.test(location.href)) {
     alert("Open your Suno workspace page first.");
@@ -820,7 +820,8 @@
     if (!id) return true;
     if (done.has(id) || getDoneSet().has(id)) return true;
     if (CFG.clipMode === "one-title" && isTitleAlreadyDownloaded(title)) return true;
-    if (unlockedSongIds.has(id)) return true;
+    // Only skip permanently after a CONFIRMED download, not an in-flight attempt
+    if (confirmedDownloadIds.has(id)) return true;
     return false;
   }
 
@@ -834,11 +835,29 @@
       titles.add(key);
       saveDoneTitles(titles);
     }
-    unlockedSongIds.add(id);
+    confirmedDownloadIds.add(id);
+    inFlightIds.delete(id);
     return done;
   }
 
-  const unlockedSongIds = new Set();
+  function unmarkSongDownloaded(id, title) {
+    if (!id) return;
+    const done = getDoneSet();
+    done.delete(id);
+    saveDoneSet(done);
+    confirmedDownloadIds.delete(id);
+    inFlightIds.delete(id);
+    // Keep title in doneTitles only if another confirmed id still owns it — simplest: remove title on failed attempt
+    const key = normalizeSongTitle(title);
+    if (key) {
+      const titles = getDoneTitles();
+      titles.delete(key);
+      saveDoneTitles(titles);
+    }
+  }
+
+  const confirmedDownloadIds = new Set();
+  const inFlightIds = new Set();
 
   function getStats() {
     return {
@@ -2243,20 +2262,15 @@
   }
 
   async function clickUnlockAndDownload(modal, songId, title) {
-    if (songId && (unlockedSongIds.has(songId) || getDoneSet().has(songId))) {
-      log("skip Unlock — already tracked", songId.slice(0, 8));
+    if (songId && (confirmedDownloadIds.has(songId) || getDoneSet().has(songId))) {
+      log("skip Unlock — already confirmed downloaded", songId.slice(0, 8));
       return true;
-    }
-    // Lock BEFORE click so any re-entry cannot download again
-    if (songId) {
-      unlockedSongIds.add(songId);
-      markSongDownloaded(songId, title);
-      log("pre-locked song (no re-download)", (title || "").slice(0, 32), songId.slice(0, 8));
     }
     statusMsg("Click Unlock & Download…");
     const btn =
       findUnlockDownloadButton(modal) ||
       (await waitFor(() => findUnlockDownloadButton(findDownloadFormatModal()), "Unlock & Download", 8000));
+    if (!btn) throw new Error("Unlock & Download button not found");
     log("Confirm button:", buttonLabel(btn));
     const watch = watchDownloadSignal(Math.min(12000, CFG.wavModalTimeout));
     await clickOnce(btn, "Unlock & Download");
@@ -2273,6 +2287,16 @@
     }
     const signal = await watch;
     log("download signal:", signal, closed ? "modal-closed" : "modal-open");
+
+    // Require real confirmation — do NOT mark done on hope
+    if (!closed && signal === "timeout") {
+      throw new Error("Unlock clicked but download not confirmed (modal still open)");
+    }
+
+    if (songId) {
+      markSongDownloaded(songId, title);
+      log("CONFIRMED download", (title || "").slice(0, 32), songId.slice(0, 8), signal);
+    }
     if (!closed && findDownloadFormatModal()) {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       await sleep(250);
@@ -2287,8 +2311,8 @@
   }
 
   async function clickDownloadMp3AndConfirm(dl, songId, title) {
-    if (songId && (getDoneSet().has(songId) || unlockedSongIds.has(songId))) {
-      log("already tracked — skip download UI", songId.slice(0, 8));
+    if (songId && (confirmedDownloadIds.has(songId) || getDoneSet().has(songId))) {
+      log("already confirmed — skip download UI", songId.slice(0, 8));
       return true;
     }
     const modal = await openDownloadFormatModal(dl);
@@ -2320,42 +2344,36 @@
     if (!id) throw new Error("song id not found");
     const title = getSongTitle(card) || id;
     if (shouldSkipSong(id, title)) {
-      log("skip already tracked", title.slice(0, 32), id.slice(0, 8));
-      markSongDownloaded(id, title);
+      log("skip already confirmed", title.slice(0, 32), id.slice(0, 8));
       return id;
     }
+    if (inFlightIds.has(id)) {
+      log("skip in-flight", id.slice(0, 8));
+      return null;
+    }
 
-    // Claim this song immediately so parallel/retry paths cannot start a second download
-    unlockedSongIds.add(id);
-    markSongDownloaded(id, title);
-
+    inFlightIds.add(id);
     log("download song", title.slice(0, 40), id.slice(0, 8), getSelectedFormat(), CFG.clipMode);
-
     statusMsg(`#${globalNum} · ${playlistProgressLine(getSavedListMeta(), getDoneSet(), getSeenSet())} · ${title.slice(0, 22)}`);
 
     startPlayerGuard();
-    let downloadStarted = false;
     try {
       const dl = await openMoreMenu(card);
-      downloadStarted = await clickDownloadMp3AndConfirm(dl, id, title);
-      if (downloadStarted) markSongDownloaded(id, title);
-      try {
-        await closeMenus();
-      } catch (_) {
-        log("closeMenus after download ignored");
+      const ok = await clickDownloadMp3AndConfirm(dl, id, title);
+      if (!ok || !confirmedDownloadIds.has(id)) {
+        throw new Error("download not confirmed");
       }
+      try { await closeMenus(); } catch (_) {}
       silencePlayer();
       await settle(CFG.maxSettleMs);
       return id;
     } catch (err) {
-      if (downloadStarted || unlockedSongIds.has(id) || getDoneSet().has(id)) {
-        log("download already started — no retry", id.slice(0, 8), err.message);
-        markSongDownloaded(id, title);
-        try { await closeMenus(); } catch (_) {}
-        return id;
-      }
+      unmarkSongDownloaded(id, title);
+      log("download FAILED — not counted as saved", id.slice(0, 8), err.message);
+      try { await closeMenus(); } catch (_) {}
       throw err;
     } finally {
+      inFlightIds.delete(id);
       stopPlayerGuard();
     }
   }
@@ -2368,7 +2386,6 @@
     if (!id) return { downloaded: 0, skipped: 1, errors: 0 };
 
     if (shouldSkipSong(id, title, done)) {
-      if (!done.has(id)) markSongDownloaded(id, title, done);
       log("skip tracked/same-title", title.slice(0, 32), id.slice(0, 8));
       stats.skipped++;
       saveStats(stats);
@@ -2377,28 +2394,24 @@
 
     try {
       const saved = await downloadOne(card, globalNum, seenCount);
-      if (saved) {
+      if (saved && confirmedDownloadIds.has(saved)) {
         markSongDownloaded(saved, title, done);
         stats.downloaded++;
         saveStats(stats);
-        return { downloaded: 1, skipped: 0, errors: 0 };
-      }
-    } catch (err) {
-      // Never retry Unlock flow — retries caused Windows (1)(2)(3) duplicates
-      if (unlockedSongIds.has(id) || getDoneSet().has(id)) {
-        markSongDownloaded(id, title, done);
-        log("error after lock — counted done, no retry", id.slice(0, 8), err.message);
+        statusMsg(`Saved ✓ ${title.slice(0, 28)}`);
         return { downloaded: 1, skipped: 0, errors: 0 };
       }
       stats.errors++;
       saveStats(stats);
+      return { downloaded: 0, skipped: 0, errors: 1 };
+    } catch (err) {
+      stats.errors++;
+      saveStats(stats);
       const fails = bumpFailed(id);
-      statusMsg(`Failed ${id.slice(0, 8)} (${fails}x): ${err.message} — scrolling on`);
+      statusMsg(`Failed ${id.slice(0, 8)} (${fails}x): ${err.message}`);
       logError(`Failed ${id.slice(0, 8)}`, err.message);
-      try { await closeMenus(); } catch (_) {}
       return { downloaded: 0, skipped: 0, errors: 1 };
     }
-    return { downloaded: 0, skipped: 0, errors: 0 };
   }
 
   async function runScrollDownload(planOverride) {
