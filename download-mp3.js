@@ -5,7 +5,7 @@
 // ============================================================
 
 (function sunoDownloadMain() {
-  const LOADER_VERSION = 11;
+  const LOADER_VERSION = 12;
 
   if (!/suno\.com/i.test(location.href)) {
     alert("Open your Suno workspace page first.");
@@ -62,7 +62,7 @@
     playlistsStoreKey: "suno-bm-playlists-v1",
     activePlaylistKey: "suno-bm-active-pl",
     downloadFormat: "MP3",
-    clipMode: "both", // both = every clip · one-title = first clip per title only
+    clipMode: "one-title", // one-title avoids Windows (1)(2) duplicates from same title
   };
 
   function getDelayPanelUi() {
@@ -1915,6 +1915,17 @@
     silencePlayer();
   }
 
+  async function clickOnce(target, label) {
+    const el = target.closest("button,a,[role='button'],label,[role='radio'],[role='option']") || target;
+    const { cx, cy } = pointerCoords(el);
+    showClickFeedback(cx, cy, label || "click");
+    log("clickOnce", label, "at", Math.round(cx), Math.round(cy));
+    // ONE activation only — dual click/event sequences can double-download
+    el.focus?.({ preventScroll: true });
+    el.click?.();
+    await sleep(180);
+  }
+
   async function clickTargetElement(target, label) {
     const el = target.closest("button,a,[role='button']") || target;
     const pos = elementPos(el, label || "click");
@@ -2180,7 +2191,7 @@
       scope = findDownloadFormatModal() || scope;
     }
     log("Format option:", format, (opt.textContent || "").trim());
-    await clickTargetElement(opt, format);
+    await clickOnce(opt, format);
     await sleep(300);
   }
 
@@ -2216,9 +2227,15 @@
   }
 
   async function clickUnlockAndDownload(modal, songId, title) {
-    if (songId && unlockedSongIds.has(songId)) {
-      log("skip Unlock — already clicked for", songId.slice(0, 8));
+    if (songId && (unlockedSongIds.has(songId) || getDoneSet().has(songId))) {
+      log("skip Unlock — already tracked", songId.slice(0, 8));
       return true;
+    }
+    // Lock BEFORE click so any re-entry cannot download again
+    if (songId) {
+      unlockedSongIds.add(songId);
+      markSongDownloaded(songId, title);
+      log("pre-locked song (no re-download)", (title || "").slice(0, 32), songId.slice(0, 8));
     }
     statusMsg("Click Unlock & Download…");
     const btn =
@@ -2226,12 +2243,7 @@
       (await waitFor(() => findUnlockDownloadButton(findDownloadFormatModal()), "Unlock & Download", 8000));
     log("Confirm button:", buttonLabel(btn));
     const watch = watchDownloadSignal(Math.min(12000, CFG.wavModalTimeout));
-    await clickTargetElement(btn, "Unlock & Download");
-    if (songId) {
-      unlockedSongIds.add(songId);
-      markSongDownloaded(songId, title);
-      log("tracked as done (no re-download)", (title || "").slice(0, 32), songId.slice(0, 8));
-    }
+    await clickOnce(btn, "Unlock & Download");
 
     const startTs = Date.now();
     let closed = false;
@@ -2295,6 +2307,10 @@
       return id;
     }
 
+    // Claim this song immediately so parallel/retry paths cannot start a second download
+    unlockedSongIds.add(id);
+    markSongDownloaded(id, title);
+
     log("download song", title.slice(0, 40), id.slice(0, 8), getSelectedFormat(), CFG.clipMode);
 
     statusMsg(`#${globalNum} · ${playlistProgressLine(getSavedListMeta(), getDoneSet(), getSeenSet())} · ${title.slice(0, 22)}`);
@@ -2332,10 +2348,8 @@
     if (!id) return { downloaded: 0, skipped: 1, errors: 0 };
 
     if (shouldSkipSong(id, title, done)) {
-      if (!done.has(id)) {
-        markSongDownloaded(id, title, done);
-        log("skip tracked/same-title", title.slice(0, 32), id.slice(0, 8));
-      }
+      if (!done.has(id)) markSongDownloaded(id, title, done);
+      log("skip tracked/same-title", title.slice(0, 32), id.slice(0, 8));
       stats.skipped++;
       saveStats(stats);
       return { downloaded: 0, skipped: 1, errors: 0 };
@@ -2350,36 +2364,19 @@
         return { downloaded: 1, skipped: 0, errors: 0 };
       }
     } catch (err) {
-      if (done.has(id) || getDoneSet().has(id) || unlockedSongIds.has(id)) {
+      // Never retry Unlock flow — retries caused Windows (1)(2)(3) duplicates
+      if (unlockedSongIds.has(id) || getDoneSet().has(id)) {
         markSongDownloaded(id, title, done);
-        return { downloaded: 0, skipped: 1, errors: 0 };
+        log("error after lock — counted done, no retry", id.slice(0, 8), err.message);
+        return { downloaded: 1, skipped: 0, errors: 0 };
       }
-      statusMsg(`Error ${id.slice(0, 8)}: ${err.message} - retry…`);
-      await closeMenus();
-      await waitForMenusClosed(CFG.menuOpenTimeout);
-      try {
-        if (shouldSkipSong(id, title, done)) {
-          markSongDownloaded(id, title, done);
-          return { downloaded: 0, skipped: 1, errors: 0 };
-        }
-        const retryCard = findCardBySongId(id) || card;
-        scrollCardIntoView(retryCard, "center");
-        await waitForCardInteractive(retryCard, CFG.cardReadyTimeout);
-        const saved = await downloadOne(retryCard, globalNum, seenCount);
-        if (saved) {
-          markSongDownloaded(saved, getSongTitle(retryCard) || title, done);
-          stats.downloaded++;
-          saveStats(stats);
-          return { downloaded: 1, skipped: 0, errors: 0 };
-        }
-      } catch (err2) {
-        stats.errors++;
-        saveStats(stats);
-        const fails = bumpFailed(id);
-        statusMsg(`Failed ${id.slice(0, 8)} (${fails}x): ${err2.message} — scrolling on`);
-        logError(`Failed ${id.slice(0, 8)}`, err2.message);
-        return { downloaded: 0, skipped: 0, errors: 1 };
-      }
+      stats.errors++;
+      saveStats(stats);
+      const fails = bumpFailed(id);
+      statusMsg(`Failed ${id.slice(0, 8)} (${fails}x): ${err.message} — scrolling on`);
+      logError(`Failed ${id.slice(0, 8)}`, err.message);
+      try { await closeMenus(); } catch (_) {}
+      return { downloaded: 0, skipped: 0, errors: 1 };
     }
     return { downloaded: 0, skipped: 0, errors: 0 };
   }
@@ -2849,8 +2846,8 @@
         </label>
         <label style="font-size:9px;color:#bbf7d0;font-weight:600">Same title
           <select id="suno-bm-clip-mode" title="Suno often has 2 clips with the same title" style="display:block;width:100%;margin-top:2px;padding:4px;border-radius:4px;border:1px solid #166534;background:#051008;color:#ecfdf5;box-sizing:border-box">
-            <option value="both" selected>Both clips</option>
-            <option value="one-title">One per title</option>
+            <option value="both">Both clips</option>
+            <option value="one-title" selected>One per title</option>
           </select>
         </label>
       </div>
