@@ -5,7 +5,7 @@
 // ============================================================
 
 (function sunoDownloadMain() {
-  const LOADER_VERSION = 12;
+  const LOADER_VERSION = 13;
 
   if (!/suno\.com/i.test(location.href)) {
     alert("Open your Suno workspace page first.");
@@ -151,6 +151,22 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const settle = (ms = CFG.minSettleMs) => sleep(ms + Math.floor(Math.random() * 120));
+
+  function isTabVisible() {
+    return document.visibilityState === "visible" && !document.hidden;
+  }
+
+  async function waitIfTabHidden() {
+    if (isTabVisible()) return;
+    statusMsg("Paused — switch back to this Suno tab to continue downloads");
+    log("tab hidden — waiting for focus (Chrome throttles background tabs)");
+    while (!window.__sunoBmStop && !isTabVisible()) {
+      await sleep(500);
+    }
+    if (window.__sunoBmStop) return;
+    statusMsg("Tab focused again — resuming…");
+    await settle(CFG.maxSettleMs);
+  }
 
   function getLogs() {
     return JSON.parse(sessionStorage.getItem(CFG.logKey) || "[]");
@@ -978,7 +994,7 @@
         ? "Working: batch visible songs → smart skip saved blocks → 2nd pass if needed"
         : playlistDone
           ? "Finished — move MP3s to folder · script stopped (won't open another playlist)"
-          : "One playlist only · skips already saved · stops when every song is done";
+          : "Keep this Suno tab focused — background tabs pause downloads";
     }
 
     const allBtn = document.getElementById("suno-bm-all");
@@ -2298,6 +2314,8 @@
   }
 
   async function downloadOne(card, globalNum, seenCount) {
+    await waitIfTabHidden();
+    if (window.__sunoBmStop) return null;
     const id = getSongId(card);
     if (!id) throw new Error("song id not found");
     const title = getSongTitle(card) || id;
@@ -2343,6 +2361,8 @@
   }
 
   async function processCard(card, done, stats, globalNum, seenCount) {
+    await waitIfTabHidden();
+    if (window.__sunoBmStop) return { downloaded: 0, skipped: 0, errors: 0 };
     const id = getSongId(card);
     const title = getSongTitle(card) || id || "";
     if (!id) return { downloaded: 0, skipped: 1, errors: 0 };
@@ -2619,6 +2639,8 @@
     window.__sunoBmStop = false;
 
     while (!window.__sunoBmStop) {
+      await waitIfTabHidden();
+      if (window.__sunoBmStop) break;
       if (!assertSamePlaylist()) return;
       refreshPanel();
 
